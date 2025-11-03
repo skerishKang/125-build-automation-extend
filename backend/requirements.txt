@@ -2,20 +2,11 @@ fastapi
 uvicorn[standard]
 python-dotenv
 python-telegram-bot==21.6
-pydantic
 requests
-chardet
-
-# For document parsing/excel/PPT
 beautifulsoup4
 openpyxl
 python-pptx
-
-# Optional: RAG (set USE_RAG=true in backend/.env)
-faiss-cpu
-chromadb
-sentence-transformers
-google-generativeai
 watchdog
-slack_bolt
-slack_sdk
+google-generativeai
+pydantic
+chardet
