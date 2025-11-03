@@ -10,3 +10,5 @@ watchdog
 google-generativeai
 pydantic
 chardet
+sqlalchemy
+python-multipart
