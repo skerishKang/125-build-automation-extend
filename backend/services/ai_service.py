@@ -8,10 +8,16 @@ from typing import Optional, List, Dict, Any
 
 # 환경변수 로드 (로컬 .env 파일)
 from dotenv import load_dotenv
-# 백엔드 디렉토리의 .env 파일 로드
-env_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), '.env')
+# 백엔드 디렉토리의 .env 파일 로드 (패키지 실행 방식 고려)
+# __file__이 backend/services/ai_service.py일 때, backend/.env을 찾기
+env_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), 'backend', '.env')
 if os.path.exists(env_path):
     load_dotenv(env_path)
+else:
+    # Alternatively try relative to backend directory
+    alt_env_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), '.env')
+    if os.path.exists(alt_env_path):
+        load_dotenv(alt_env_path)
 
 logger = logging.getLogger(__name__)
 

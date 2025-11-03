@@ -58,6 +58,10 @@ recent_documents: Dict[int, List[Dict[str, Any]]] = {}
 
 async def handle_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """start 명령어 핸들러"""
+    logger.info("UPDATE from chat=%s user=%s text=%r",
+                update.effective_chat.id,
+                getattr(update.effective_user, "username", None),
+                update.message.text)
     user_name = update.effective_user.first_name or "User"
     await update.message.reply_text(
         f"👋 안녕하세요 {user_name}님!\n\n"
@@ -320,6 +324,10 @@ async def handle_ask(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """텍스트 메시지 핸들러"""
+    logger.info("UPDATE from chat=%s user=%s text=%r",
+                update.effective_chat.id,
+                getattr(update.effective_user, "username", None),
+                update.message.text)
     text = (update.message.text or "").strip()
 
     # 명령어는 별도 핸들러에서 처리
@@ -349,6 +357,9 @@ async def main():
     # 텔레그램 애플리케이션 생성
     application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
 
+    me = await application.bot.get_me()
+    logger.info(f"BOT @%s (%s)", me.username, me.id)
+
     # 핸들러 등록
     application.add_handler(CommandHandler("start", handle_start))
     application.add_handler(CommandHandler("help", handle_help))
@@ -376,39 +387,3 @@ async def main():
     finally:
         await application.shutdown()
         print("INFO: Bot shutdown complete")
-
-
-if __name__ == "__main__":
-    try:
-        # 이벤트 루프 생성 및 실행
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-
-        try:
-            loop.run_until_complete(main())
-        except KeyboardInterrupt:
-            print("\nINFO: Interrupted by user")
-        except Exception as e:
-            print(f"FATAL ERROR: {e}")
-            import traceback
-            traceback.print_exc()
-            sys.exit(1)
-        finally:
-            # 정리
-            pending = asyncio.all_tasks(loop)
-            for task in pending:
-                task.cancel()
-
-            if pending:
-                try:
-                    loop.run_until_complete(
-                        asyncio.gather(*pending, return_exceptions=True)
-                    )
-                except Exception:
-                    pass
-
-            loop.close()
-
-    except Exception as e:
-        print(f"FATAL ERROR: {e}")
-        sys.exit(1)
