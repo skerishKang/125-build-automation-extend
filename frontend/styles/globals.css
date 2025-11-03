@@ -1,0 +1,65 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* 전역 스타일 */
+@layer base {
+  html,
+  body {
+    @apply h-full;
+  }
+
+  body {
+    @apply bg-gray-50 text-gray-900 antialiased;
+  }
+}
+
+@layer components {
+  /* 버튼 컴포넌트 */
+  .btn-primary {
+    @apply bg-blue-500 hover:bg-blue-600 text-white font-semibold py-2 px-4 rounded-lg transition-colors duration-200 disabled:bg-gray-300 disabled:cursor-not-allowed;
+  }
+
+  .btn-secondary {
+    @apply bg-gray-200 hover:bg-gray-300 text-gray-800 font-semibold py-2 px-4 rounded-lg transition-colors duration-200;
+  }
+
+  .btn-success {
+    @apply bg-green-500 hover:bg-green-600 text-white font-semibold py-2 px-4 rounded-lg transition-colors duration-200;
+  }
+
+  .btn-danger {
+    @apply bg-red-500 hover:bg-red-600 text-white font-semibold py-2 px-4 rounded-lg transition-colors duration-200;
+  }
+
+  /* 입력 필드 컴포넌트 */
+  .input-field {
+    @apply w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent;
+  }
+
+  /* 카드 컴포넌트 */
+  .card {
+    @apply bg-white rounded-lg shadow-md p-6;
+  }
+
+  /* 토스트 알림 컴포넌트 */
+  .toast {
+    @apply fixed bottom-4 right-4 p-4 rounded-lg shadow-lg text-white font-semibold animate-slide-up;
+  }
+
+  .toast-success {
+    @apply bg-green-500;
+  }
+
+  .toast-error {
+    @apply bg-red-500;
+  }
+
+  .toast-info {
+    @apply bg-blue-500;
+  }
+
+  .toast-warning {
+    @apply bg-yellow-500;
+  }
+}

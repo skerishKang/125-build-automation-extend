@@ -1,0 +1,7 @@
+INFO:     Will watch for changes in these directories: ['G:\\Ddrive\\BatangD\\task\\workdiary\\125-build-automation-extend']
+INFO:     Uvicorn running on http://127.0.0.1:8000 (Press CTRL+C to quit)
+INFO:     Started reloader process [46304] using WatchFiles
+INFO:     Started server process [40808]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+WARNING:  WatchFiles detected changes in 'backend\__init__.py'. Reloading...
