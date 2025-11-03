@@ -40,11 +40,22 @@ if GEMINI_API_KEY:
             top_p=0.9,
             max_output_tokens=GEN_MAX_OUTPUT_TOKENS
         )
-        model = genai.GenerativeModel(
-            'gemini-2.0-flash-exp',
-            generation_config=generation_config
-        )
-        logger.info("Gemini AI 모델 초기화 완료")
+
+        model_names = ['gemini-2.0-flash-exp', 'gemini-2.0-flash', 'gemini-2.5-pro']
+        for model_name in model_names:
+            try:
+                model = genai.GenerativeModel(
+                    model_name,
+                    generation_config=generation_config
+                )
+                logger.info(f"Successfully initialized Gemini AI model: {model_name}")
+                break
+            except Exception as e:
+                logger.warning(f"Failed to initialize Gemini AI model: {model_name}. Error: {e}")
+        
+        if not model:
+            logger.error("Failed to initialize any Gemini AI model.")
+
     except ImportError as e:
         logger.error(f"google-generativeai 모듈을 찾을 수 없습니다: {e}")
         logger.error("pip install google-generativeai를 실행해주세요")

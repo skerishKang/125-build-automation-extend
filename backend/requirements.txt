@@ -6,13 +6,16 @@ pydantic
 requests
 chardet
 
-# 문서 파싱/엑셀/PPT 필요 시
+# For document parsing/excel/PPT
 beautifulsoup4
 openpyxl
 python-pptx
 
-# 선택: RAG 사용 시 (backend/.env에서 USE_RAG=true 설정 필요)
+# Optional: RAG (set USE_RAG=true in backend/.env)
 faiss-cpu
 chromadb
 sentence-transformers
 google-generativeai
+watchdog
+slack_bolt
+slack_sdk
