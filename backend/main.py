@@ -15,11 +15,25 @@ from backend.services.ai_service import (
 import os
 import tempfile
 import chardet
+import logging
+from logging.handlers import RotatingFileHandler
 from dotenv import load_dotenv
-
 
 # 환경변수 로드
 load_dotenv()
+
+# 로깅 설정
+logger = logging.getLogger("app")
+logger.setLevel(logging.INFO)
+handler = RotatingFileHandler("backend.log", maxBytes=5_000_000, backupCount=3)
+formatter = logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s")
+handler.setFormatter(formatter)
+logger.addHandler(handler)
+
+# 콘솔 로거
+console_handler = logging.StreamHandler()
+console_handler.setFormatter(formatter)
+logger.addHandler(console_handler)
 
 
 # FastAPI 앱 생성
@@ -46,18 +60,15 @@ app = FastAPI(
 
 
 # CORS 미들웨어 설정
-# 프론트엔드 도메인에서 API 호출 허용
+# 환경변수에서 허용 오리진 목록 읽기 (콤마로 구분)
+allowed_origins_str = os.getenv("ALLOWED_ORIGINS", "http://localhost:3000")
+allowed_origins = [origin.strip() for origin in allowed_origins_str.split(",")]
+
+logger.info(f"CORS allowed origins: {allowed_origins}")
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:3000",
-        "http://localhost:3001",
-        "http://localhost:3002",
-        "http://127.0.0.1:3000",
-        "http://127.0.0.1:3001",
-        "http://127.0.0.1:3002",
-        os.getenv("FRONTEND_URL", "http://localhost:3002")
-    ],
+    allow_origins=allowed_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"]

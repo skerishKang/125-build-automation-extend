@@ -6,6 +6,13 @@ import os
 import logging
 from typing import Optional, List, Dict, Any
 
+# 환경변수 로드 (로컬 .env 파일)
+from dotenv import load_dotenv
+# 백엔드 디렉토리의 .env 파일 로드
+env_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), '.env')
+if os.path.exists(env_path):
+    load_dotenv(env_path)
+
 logger = logging.getLogger(__name__)
 
 # 환경변수
