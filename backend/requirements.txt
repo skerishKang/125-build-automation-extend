@@ -1,20 +1,18 @@
 fastapi
-uvicorn
-sqlalchemy
-authlib
-python-jose
-passlib
-cryptography
-python-multipart
+uvicorn[standard]
 python-dotenv
-google-generativeai
+python-telegram-bot==21.6
+pydantic
 requests
-markdown-it-py
+chardet
+
+# 문서 파싱/엑셀/PPT 필요 시
 beautifulsoup4
 openpyxl
 python-pptx
-chardet
+
+# 선택: RAG 사용 시 (backend/.env에서 USE_RAG=true 설정 필요)
 faiss-cpu
 chromadb
 sentence-transformers
-httpx
+google-generativeai

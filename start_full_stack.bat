@@ -1,8 +1,10 @@
 @echo off
-title 125 Build Automation - AI Document Analyzer
+title 125 Build Automation - Full Stack (Unified)
 echo ==========================================================
-echo 125 Build Automation - AI Document Analyzer (Enhanced)
-echo Full-featured version with Korean language support
+echo 125 Build Automation - Full Stack (Unified Version)
+echo - FastAPI Backend (Port 8000)
+echo - Next.js Frontend (Port 3000, proxied via /api/*)
+echo - Telegram Bot (Separated Process)
 echo ==========================================================
 echo.
 
@@ -14,9 +16,9 @@ echo.
 echo Step 1/3: Backend preparation...
 echo   - Checking environment...
 cd backend
-python -c "from dotenv import load_dotenv; import os; load_dotenv(); print('ENV: OK' if os.getenv('TELEGRAM_BOT_TOKEN') else 'ENV: MISSING')" 2>nul
-echo   - Starting enhanced AI chatbot...
-start cmd /k "cd /d g:\Ddrive\BatangD\task\workdiary\125-build-automation-extend\backend && python main_enhanced.py"
+python -c "from dotenv import load_dotenv; import os; load_dotenv(); print('ENV: OK' if os.getenv('GEMINI_API_KEY') else 'ENV: MISSING GEMINI_API_KEY')" 2>nul
+echo   - Starting FastAPI backend on port 8000...
+start cmd /k "cd /d g:\Ddrive\BatangD\task\workdiary\125-build-automation-extend\backend && python -m uvicorn main:app --reload --port 8000 --host 0.0.0.0"
 cd ..
 
 echo.
@@ -32,11 +34,18 @@ echo.
 echo Step 3/3: Starting frontend...
 echo ==========================================================
 echo Frontend URL: http://localhost:3000
-echo Enhanced AI Chatbot: Check new terminal window
-echo Features: Document analysis, Korean language support
+echo Backend API: Proxied through /api/* (No port needed!)
+echo Telegram Bot: Check new terminal window
+echo Features: API Key Verification + AI Document Analysis
 echo Stop frontend: Ctrl+C in this window
 echo ==========================================================
 echo.
 
 cd frontend
 npm run dev
+
+echo.
+echo ==========================================================
+echo All services stopped
+echo ==========================================================
+pause

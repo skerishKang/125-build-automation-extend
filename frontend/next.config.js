@@ -1,18 +1,23 @@
 /** @type {import('next').NextConfig} */
-const nextConfig = {
+const BACKEND_ORIGIN = process.env.BACKEND_ORIGIN || 'http://localhost:8000';
+
+module.exports = {
   reactStrictMode: true,
   swcMinify: true,
-  env: {
-    NEXT_PUBLIC_API_BASE: process.env.NEXT_PUBLIC_API_BASE || 'http://localhost:8000'
-  },
   async rewrites() {
     return [
       {
         source: '/api/:path*',
-        destination: `${process.env.NEXT_PUBLIC_API_BASE || 'http://localhost:8000'}/:path*`,
+        destination: `${BACKEND_ORIGIN}/api/:path*`,
+      },
+      {
+        source: '/health',
+        destination: `${BACKEND_ORIGIN}/health`,
+      },
+      {
+        source: '/verify/:path*',
+        destination: `${BACKEND_ORIGIN}/verify/:path*`,
       },
     ];
   },
-}
-
-module.exports = nextConfig
+};
