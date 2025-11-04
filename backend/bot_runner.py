@@ -77,6 +77,13 @@ SHORT_AUDIO_THRESHOLD = int(os.getenv("SHORT_AUDIO_THRESHOLD", "30"))  # 30초 �
 LONG_AUDIO_THRESHOLD = int(os.getenv("LONG_AUDIO_THRESHOLD", "300"))  # 5분 이상
 MID_LENGTH_MODEL = os.getenv("MID_LENGTH_AUDIO", "gemini")  # 30초-5분 기본
 
+# Drive monitoring configuration
+DRIVE_MONITOR_INTERVAL = int(os.getenv("DRIVE_MONITOR_INTERVAL", "300"))  # 5분 (300초)
+ENABLE_DRIVE_MONITORING = os.getenv("ENABLE_DRIVE_MONITORING", "true").lower() == "true"
+
+# Global application instance for Drive monitoring
+_app_instance = None
+
 
 def get_audio_duration(ogg_path: str) -> float:
     """Get audio duration in seconds using ffprobe (if available) or estimate"""
@@ -205,12 +212,14 @@ async def reply_text(update: Update, text: str):
 
 async def handle_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     name = update.effective_user.first_name or "사용자"
+    monitoring_status = "🔄 Drive 자동 모니터링" if ENABLE_DRIVE_MONITORING else "📋 Manual Drive 체크"
     await reply_text(update,
         f"안녕하세요 {name}님! 👋\n\n"
         "이 봇은 Gemini 2.5 Flash 기반 \"올인원\"입니다.\n"
         "- 자유 대화 (메모리 포함)\n"
         "- 문서/이미지/음성 멀티모달 처리\n"
-        "- Google Drive 양방향 동기화\n\n"
+        "- Google Drive 양방향 동기화\n"
+        f"- {monitoring_status}\n\n"
         "도움말: /drive")
 
 
@@ -627,30 +636,114 @@ async def handle_drive_sync(update: Update, context: ContextTypes.DEFAULT_TYPE):
     progress_messages.append(await update.message.reply_text("🔍 드라이브 새 파일 확인 중... [0%]"))
 
     try:
-        from backend.services.drive_sync import check_new_files
+        from backend.services.drive_sync import check_new_files, get_folder_files, check_deleted_files
 
         progress_messages.append(await update.message.reply_text("📂 드라이브 스캔 중... [50%]"))
 
+        # Get current files and check for new/deleted
+        current_files = get_folder_files()
         new_files = check_new_files()
+        deleted_files = check_deleted_files(current_files)
 
         progress_messages.append(await update.message.reply_text("✅ 확인 완료! [100%]"))
 
-        if not new_files:
+        # Format results
+        result_lines = []
+        has_changes = False
+
+        if new_files:
+            has_changes = True
+            result_lines.append(f"🆕 **새로 올라온 파일** ({len(new_files)}개):\n")
+            for i, file in enumerate(new_files, 1):
+                file_type = "📁 폴더" if file.get('mimeType') == 'application/vnd.google-apps.folder' else "📄 파일"
+                result_lines.append(f"{i}. {file_type}: **{file['name']}**")
+                result_lines.append(f"   ID: `{file['id']}`")
+            result_lines.append("")
+
+        if deleted_files:
+            has_changes = True
+            result_lines.append(f"🗑️ **삭제된 파일** ({len(deleted_files)}개):\n")
+            for i, file in enumerate(deleted_files, 1):
+                result_lines.append(f"{i}. **{file['name']}**")
+                result_lines.append(f"   ID: `{file['id']}`")
+            result_lines.append("")
+
+        if not has_changes:
             await reply_text(update, "📭 새 파일이 없습니다.")
-            return
-
-        # Format new files list
-        lines = [f"🆕 **새로 올라온 파일** ({len(new_files)}개):\n"]
-        for i, file in enumerate(new_files, 1):
-            file_type = "📁 폴더" if file.get('mimeType') == 'application/vnd.google-apps.folder' else "📄 파일"
-            lines.append(f"{i}. {file_type}: **{file['name']}**")
-            lines.append(f"   ID: `{file['id']}`")
-
-        await reply_text(update, "\n".join(lines))
+        else:
+            await reply_text(update, "\n".join(result_lines).strip())
 
     except Exception as e:
         logger.error(f"Drive sync error: {e}")
         await reply_text(update, f"새 파일 확인 중 오류가 발생했어요: {str(e)[:100]}")
+
+
+async def monitor_drive_changes():
+    """Background task to monitor Google Drive for changes"""
+    logger.info("🔍 Drive monitoring worker started")
+
+    while True:
+        try:
+            if not ENABLE_DRIVE_MONITORING:
+                await asyncio.sleep(60)
+                continue
+
+            from backend.services.drive_sync import (
+                get_folder_files, check_new_files, check_deleted_files,
+                cache_current_files, load_cached_files
+            )
+
+            # Get current files
+            current_files = get_folder_files()
+
+            # Check for deleted files
+            deleted_files = check_deleted_files(current_files)
+
+            # Check for new files
+            new_files = check_new_files()
+
+            # Broadcast notifications if there are changes
+            if (new_files or deleted_files) and _app_instance:
+                message_parts = []
+
+                if new_files:
+                    message_parts.append(f"🆕 **새로 올라온 파일** ({len(new_files)}개):")
+                    for file in new_files[:5]:  # Show max 5 files
+                        file_type = "📁 폴더" if file.get('mimeType') == 'application/vnd.google-apps.folder' else "📄"
+                        message_parts.append(f"• {file_type}: {file['name']}")
+                    if len(new_files) > 5:
+                        message_parts.append(f"... 외 {len(new_files) - 5}개")
+                    message_parts.append("")
+
+                if deleted_files:
+                    message_parts.append(f"🗑️ **삭제된 파일** ({len(deleted_files)}개):")
+                    for file in deleted_files[:5]:  # Show max 5 files
+                        message_parts.append(f"• {file['name']}")
+                    if len(deleted_files) > 5:
+                        message_parts.append(f"... 외 {len(deleted_files) - 5}개")
+                    message_parts.append("")
+
+                notification_text = "\n".join(message_parts).strip()
+
+                # Get all chat IDs that have interacted with the bot
+                # For now, we'll log the changes (implement user tracking if needed)
+                logger.info(f"Drive changes detected: {len(new_files)} new, {len(deleted_files)} deleted")
+
+                # TODO: Implement broadcast to specific users
+                # This requires tracking which users have enabled Drive notifications
+
+            # Update cache if it's empty (first run)
+            if not load_cached_files():
+                cache_current_files(current_files)
+                logger.info("Initialized Drive file cache")
+
+        except Exception as e:
+            logger.error(f"Drive monitoring error: {e}")
+
+        # Wait for next check
+        await asyncio.sleep(DRIVE_MONITOR_INTERVAL)
+
+    logger.info("🔍 Drive monitoring worker stopped")
 
 
 def extract_text_from_file(file_path: str, file_name: str) -> str:
@@ -848,12 +941,17 @@ def main():
     print(f"GEMINI_API_KEY: {'Set' if GEMINI_API_KEY else 'Not Found'}")
     print(f"Supabase: {'Set' if (SUPABASE_URL and SUPABASE_KEY) else 'Not Set'}")
     print(f"Google Drive: {'Set' if os.path.exists(os.path.join(os.path.dirname(__file__), '..', 'service_account.json')) else 'Not Set'}")
+    print(f"Drive Monitoring: {'Enabled' if ENABLE_DRIVE_MONITORING else 'Disabled'} (interval: {DRIVE_MONITOR_INTERVAL}s)")
 
     if not TELEGRAM_BOT_TOKEN:
         print("ERROR: TELEGRAM_BOT_TOKEN is missing")
         return
 
     app = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
+
+    # Store app instance for Drive monitoring
+    global _app_instance
+    _app_instance = app
 
     app.add_handler(CommandHandler("start", handle_start))
     app.add_handler(CommandHandler("list", handle_list))
@@ -866,6 +964,11 @@ def main():
     app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
     app.add_handler(MessageHandler(filters.VOICE, handle_voice))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
+
+    # Start Drive monitoring worker
+    if ENABLE_DRIVE_MONITORING:
+        logger.info("Starting Drive monitoring worker...")
+        app.create_task(monitor_drive_changes())
 
     logger.info("Handlers registered. Starting polling...")
     app.run_polling()

@@ -27,6 +27,10 @@ FOLDER_ID = "19hVkhtfoX1s7EVzoeuc8bvo2mosBJg75"
 
 # Track last seen files
 LAST_CHECK_FILE = os.path.join(tempfile.gettempdir(), 'drive_sync_last_check.json')
+DELETED_FILES_TRACKER = os.path.join(tempfile.gettempdir(), 'drive_sync_deleted_files.json')
+
+# Cache current files for deletion detection
+CACHE_FILE = os.path.join(tempfile.gettempdir(), 'drive_sync_cache.json')
 
 
 def get_drive_service():
@@ -158,6 +162,61 @@ def load_last_check() -> str:
     return '1970-01-01T00:00:00.000Z'
 
 
+def cache_current_files(files: List[Dict[str, Any]]):
+    """Cache current file list for deletion detection"""
+    try:
+        with open(CACHE_FILE, 'w') as f:
+            json.dump({
+                'cached_files': {f['id']: f for f in files},
+                'last_cache_update': datetime.utcnow().isoformat() + 'Z'
+            }, f, indent=2)
+    except Exception as e:
+        logger.error(f"Error caching files: {e}")
+
+
+def load_cached_files() -> Dict[str, Dict[str, Any]]:
+    """Load cached file list"""
+    try:
+        if os.path.exists(CACHE_FILE):
+            with open(CACHE_FILE, 'r') as f:
+                data = json.load(f)
+                return data.get('cached_files', {})
+    except Exception as e:
+        logger.error(f"Error loading cached files: {e}")
+    return {}
+
+
+def check_deleted_files(current_files: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Check for deleted files by comparing with cached file list"""
+    cached_files = load_cached_files()
+    current_file_ids = {f['id'] for f in current_files}
+    cached_file_ids = set(cached_files.keys())
+
+    # Find deleted files (in cache but not in current)
+    deleted_file_ids = cached_file_ids - current_file_ids
+
+    deleted_files = []
+    for file_id in deleted_file_ids:
+        if file_id in cached_files:
+            deleted_files.append(cached_files[file_id])
+
+    if deleted_files:
+        logger.info(f"Found {len(deleted_files)} deleted files")
+        # Update cache with current files
+        cache_current_files(current_files)
+
+    return deleted_files
+
+
+def save_last_check(timestamp: str):
+    """Save the last check timestamp"""
+    try:
+        with open(LAST_CHECK_FILE, 'w') as f:
+            json.dump({'last_check': timestamp}, f)
+    except Exception as e:
+        logger.error(f"Error saving last check: {e}")
+
+
 def check_new_files() -> List[Dict[str, Any]]:
     """Check for new files uploaded since last check"""
     service = get_drive_service()
@@ -180,6 +239,8 @@ def check_new_files() -> List[Dict[str, Any]]:
             logger.info(f"Found {len(files)} new files")
             # Update last check time
             save_last_check(datetime.utcnow().isoformat() + 'Z')
+            # Update cache
+            cache_current_files(get_folder_files())
 
         return files
 
