@@ -11,6 +11,7 @@ import logging
 from datetime import datetime
 from typing import Dict, List, Any
 import tempfile
+import asyncio
 
 from dotenv import load_dotenv
 load_dotenv(os.path.join(os.path.dirname(__file__), ".env"))
@@ -39,6 +40,7 @@ logging.getLogger("telegram").setLevel(logging.WARNING)
 # telegram
 try:
     from telegram import Update
+    from telegram.constants import ChatAction
     from telegram.ext import Application, CommandHandler, MessageHandler, ContextTypes, filters
 except ImportError:
     logger.error("python-telegram-bot is not installed. pip install python-telegram-bot==21.6")
@@ -69,6 +71,28 @@ if SUPABASE_URL and SUPABASE_KEY:
 # in-memory recent docs (fallback)
 recent_documents: Dict[int, List[Dict[str, Any]]] = {}
 
+# Smart audio processing configuration
+SHORT_AUDIO_THRESHOLD = int(os.getenv("SHORT_AUDIO_THRESHOLD", "30"))  # 30초 이하
+LONG_AUDIO_THRESHOLD = int(os.getenv("LONG_AUDIO_THRESHOLD", "300"))  # 5분 이상
+MID_LENGTH_MODEL = os.getenv("MID_LENGTH_AUDIO", "gemini")  # 30초-5분 기본
+
+
+def get_audio_duration(ogg_path: str) -> float:
+    """Get audio duration in seconds using ffprobe (if available) or estimate"""
+    try:
+        import subprocess
+        result = subprocess.run(
+            ["ffprobe", "-v", "quiet", "-show_entries", "format=duration",
+             "-of", "csv=p=0", ogg_path],
+            capture_output=True, text=True, check=True
+        )
+        return float(result.stdout.strip())
+    except Exception:
+        # Fallback: estimate based on file size (rough)
+        # ~1MB per minute at 64kbps
+        size_mb = os.path.getsize(ogg_path) / (1024 * 1024)
+        return size_mb * 60 * 0.7  # conservative estimate
+
 
 def format_plain(text: str, max_len: int = 1200) -> str:
     """Format Gemini response to Telegram-friendly plain text"""
@@ -96,6 +120,47 @@ def format_plain(text: str, max_len: int = 1200) -> str:
     if len(text) > max_len:
         text = text[:max_len] + "…"
     return text
+
+
+# Thread pool for CPU-intensive operations (transcription, etc.)
+from concurrent.futures import ThreadPoolExecutor
+audio_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="audio_processing")
+
+
+async def _action_indicator(context: ContextTypes.DEFAULT_TYPE, chat_id: int, action: str, stop_event: asyncio.Event):
+    try:
+        while not stop_event.is_set():
+            try:
+                await context.bot.send_chat_action(chat_id=chat_id, action=action)
+            except Exception:
+                pass
+            # Telegram은 5초 동안 액션 유지. 4초 주기로 새로 송신.
+            try:
+                await asyncio.wait_for(stop_event.wait(), timeout=4.0)
+            except asyncio.TimeoutError:
+                continue
+    except Exception:
+        pass
+
+class ActionIndicator:
+    def __init__(self, context: ContextTypes.DEFAULT_TYPE, chat_id: int, action: str):
+        self.context = context
+        self.chat_id = chat_id
+        self.action = action
+        self.stop_event = asyncio.Event()
+        self.task: asyncio.Task | None = None
+
+    async def __aenter__(self):
+        self.task = asyncio.create_task(_action_indicator(self.context, self.chat_id, self.action, self.stop_event))
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        self.stop_event.set()
+        if self.task:
+            try:
+                await asyncio.wait_for(self.task, timeout=1.5)
+            except Exception:
+                self.task.cancel()
 
 
 async def save_memory(user_id: str, username: str, message: str, response: str):
@@ -189,17 +254,75 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "항상 한국어로만 답변하고, Markdown 표/코드블록 없이 간결한 문장으로 답하세요."
     ])
 
+    # 1) 즉시 수신 확인 + 액션 인디케이터 + 진행률 업데이트 루프 시작
+    ack_msg = None
     try:
-        # Gemini 2.0 Flash call
-        response = gemini_model.generate_content(prompt)
-        answer = response.text.strip()
-        answer = format_plain(answer)
+        ack_msg = await update.message.reply_text("💬 답변 생성 중… [0%]")
+    except Exception:
+        ack_msg = None
+
+    indicator = ActionIndicator(context, update.effective_chat.id, ChatAction.TYPING)
+    await indicator.__aenter__()
+
+    progress_stop = asyncio.Event()
+
+    async def progress_updater():
+        if not ack_msg:
+            return
+        pct = 0
+        try:
+            while not progress_stop.is_set():
+                pct = min(90, pct + 10)
+                try:
+                    await context.bot.edit_message_text(
+                        chat_id=update.effective_chat.id,
+                        message_id=ack_msg.message_id,
+                        text=f"💬 답변 생성 중… [{pct}%]"
+                    )
+                except Exception:
+                    pass
+                try:
+                    await asyncio.wait_for(progress_stop.wait(), timeout=1.6)
+                except asyncio.TimeoutError:
+                    continue
+        except Exception:
+            pass
+
+    progress_task = asyncio.create_task(progress_updater())
+
+    try:
+        # 2) 블로킹 추론을 스레드로 오프로딩하여 동시 메시지 처리 유지
+        def _call_gemini():
+            resp = gemini_model.generate_content(prompt)
+            return resp.text.strip()
+        raw = await asyncio.to_thread(_call_gemini)
+        answer = format_plain(raw)
         logger.info(f"Bot replied ({len(answer)} chars): {answer[:100]}...")
     except Exception as e:
         logger.error(f"Gemini error: {e}")
         answer = "죄송해요, 지금은 답변을 생성할 수 없어요."
+    finally:
+        # 3) 진행 루프 종료
+        progress_stop.set()
+        try:
+            await asyncio.wait_for(progress_task, timeout=1.0)
+        except Exception:
+            progress_task.cancel()
+        await indicator.__aexit__(None, None, None)
 
-    await reply_text(update, answer)
+    # 4) 최종 100%로 교체 또는 새 메시지 전송
+    if ack_msg:
+        try:
+            await context.bot.edit_message_text(
+                chat_id=update.effective_chat.id,
+                message_id=ack_msg.message_id,
+                text=f"✅ 답변 [100%]:\n{answer}"
+            )
+        except Exception:
+            await reply_text(update, answer)
+    else:
+        await reply_text(update, answer)
+
     await save_memory(user_id, username, text, answer)
 
 
@@ -217,6 +340,9 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     file = await context.bot.get_file(doc.file_id)
     tmp = os.path.join(tempfile.gettempdir(), f"{doc.file_id}_{doc.file_name}")
+    # 업로드 액션 인디케이터 시작
+    doc_indicator = ActionIndicator(context, update.effective_chat.id, ChatAction.UPLOAD_DOCUMENT)
+    await doc_indicator.__aenter__()
     await file.download_to_drive(tmp)
 
     # Only handle text files for now (simplified)
@@ -256,6 +382,7 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 pass
         else:
             await reply_text(update, "Gemini 설정이 없어 파일 분석이 비활성화되어 있어요.")
+        await doc_indicator.__aexit__(None, None, None)
         return
 
     user_id = str(update.effective_user.id)
@@ -266,8 +393,11 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
         prompt += "\n\n항상 한국어로만 답변하고, Markdown 표/코드블록 없이 간결한 문장으로 답하세요."
 
         # Gemini call
-        response = gemini_model.generate_content(prompt)
-        answer = response.text.strip()
+        # 블로킹 추론 오프로딩
+        def _call_gemini_doc():
+            resp = gemini_model.generate_content(prompt)
+            return resp.text.strip()
+        answer = await asyncio.to_thread(_call_gemini_doc)
         answer = format_plain(answer)
     except Exception as e:
         logger.error(f"Gemini doc error: {e}")
@@ -293,6 +423,7 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "timestamp": datetime.utcnow()
     })
     await save_memory(user_id, username, f"[문서] {doc.file_name}", answer)
+    await doc_indicator.__aexit__(None, None, None)
 
 
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -311,6 +442,8 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         photo = update.message.photo[-1]
         file = await context.bot.get_file(photo.file_id)
         tmp = os.path.join(tempfile.gettempdir(), f"{photo.file_id}.jpg")
+        photo_indicator = ActionIndicator(context, update.effective_chat.id, ChatAction.UPLOAD_PHOTO)
+        await photo_indicator.__aenter__()
         await file.download_to_drive(tmp)
 
         # Step update: download complete
@@ -368,6 +501,11 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 os.remove(tmp)
         except Exception:
             pass
+        try:
+            if 'photo_indicator' in locals():
+                await photo_indicator.__aexit__(None, None, None)
+        except Exception:
+            pass
 
 
 async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -375,63 +513,191 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await reply_text(update, "Gemini 설정이 없어 음성 처리가 비활성화되어 있어요.")
         return
 
-    # Immediate acknowledgment
+    # Immediate acknowledgment + background processing message
     ack_msg = None
     try:
-        ack_msg = await update.message.reply_text("🎤 음성을 받았어요. 멀티모달 분석 중…")
+        ack_msg = await update.message.reply_text(
+            "🎤 음성을 받았어요. 백그라운드에서 처리 중입니다! "
+            "다른 메시지도 바로 보낼 수 있어요. 😊"
+        )
     except Exception:
         ack_msg = None
 
+    chat_id = update.effective_chat.id
+    user_id = str(update.effective_user.id)
+    username = update.effective_user.first_name or "사용자"
+
+    # Create background task for voice processing (non-blocking)
+    asyncio.create_task(process_voice_background(update, context, chat_id, user_id, username, ack_msg))
+
+
+async def process_voice_background(update, context, chat_id, user_id, username, ack_msg):
+    """Process voice in background - non-blocking, allows immediate responses"""
+    voice = update.message.voice
+    file = await context.bot.get_file(voice.file_id)
+    ogg_path = os.path.join(tempfile.gettempdir(), f"{voice.file_id}.ogg")
+    wav_path = os.path.join(tempfile.gettempdir(), f"{voice.file_id}.wav")
+
     try:
-        voice = update.message.voice
-        file = await context.bot.get_file(voice.file_id)
-        tmp = os.path.join(tempfile.gettempdir(), f"{voice.file_id}.ogg")
-        await file.download_to_drive(tmp)
+        # Download voice file
+        await file.download_to_drive(ogg_path)
 
-        # Gemini's multimodal can handle audio directly
-        import google.generativeai as genai
-        audio_part = {"mime_type": "audio/ogg", "data": open(tmp, "rb").read()}
+        # Get audio duration
+        duration = get_audio_duration(ogg_path)
 
-        prompt = "이 음성 메시지가 전사된 텍스트와 적절한 요약/답변을 한국어로 제공해주세요."
-        prompt += "\n\n항상 한국어로만 답변하고, Markdown 표/코드블록 없이 간결한 문장으로 답하세요."
-
-        # Multimodal call with audio
-        response = gemini_model.generate_content([prompt, audio_part])
-        answer = response.text.strip()
-        answer = format_plain(answer)
-
-        final_text = f"🎤 음성 분석 결과:\n{answer}"
-        if ack_msg:
-            try:
-                await context.bot.edit_message_text(
-                    chat_id=update.effective_chat.id,
-                    message_id=ack_msg.message_id,
-                    text=final_text
-                )
-            except Exception:
-                await reply_text(update, final_text)
+        # Select model based on duration
+        if duration <= SHORT_AUDIO_THRESHOLD:
+            # SHORT: Use Gemini 2.5 Flash (multimodal, fast)
+            result = await process_with_gemini_multimodal(ogg_path, duration, chat_id, context, ack_msg)
+            mode = "Gemini 2.5 Flash (멀티모달)"
+        elif duration >= LONG_AUDIO_THRESHOLD:
+            # LONG: Use Whisper + Gemini (accurate, free)
+            result = await process_with_whisper_gemini(ogg_path, wav_path, duration, chat_id, context, ack_msg)
+            mode = "Whisper + Gemini (정확도 최적화)"
         else:
-            await reply_text(update, final_text)
+            # MID: Use environment setting
+            if MID_LENGTH_MODEL == "gemini":
+                result = await process_with_gemini_multimodal(ogg_path, duration, chat_id, context, ack_msg)
+                mode = "Gemini 2.5 Flash (멀티모달)"
+            else:
+                result = await process_with_whisper_gemini(ogg_path, wav_path, duration, chat_id, context, ack_msg)
+                mode = "Whisper + Gemini (정확도 최적화)"
+
+        # Send result
+        if result:
+            final_text = f"🎤 {mode} 처리 결과 ({duration:.1f}초):\n\n{result}"
+            if ack_msg:
+                try:
+                    await context.bot.edit_message_text(
+                        chat_id=chat_id, message_id=ack_msg.message_id, text=final_text
+                    )
+                except Exception:
+                    await context.bot.send_message(chat_id, final_text)
+            else:
+                await context.bot.send_message(chat_id, final_text)
+
+            # Save to memory
+            await save_memory(user_id, username, f"[음성] {duration:.1f}초", result)
+
     except Exception as e:
-        logger.error(f"voice error: {e}")
+        logger.error(f"Voice processing error: {e}")
+        error_msg = f"음성 처리 중 오류가 발생했어요: {str(e)[:100]}"
         if ack_msg:
             try:
                 await context.bot.edit_message_text(
-                    chat_id=update.effective_chat.id,
-                    message_id=ack_msg.message_id,
-                    text="음성 처리에 실패했어요."
+                    chat_id=chat_id, message_id=ack_msg.message_id, text=error_msg
                 )
             except Exception:
-                await reply_text(update, "음성 처리에 실패했어요.")
+                await context.bot.send_message(chat_id, error_msg)
         else:
-            await reply_text(update, "음성 처리에 실패했어요.")
+            await context.bot.send_message(chat_id, error_msg)
     finally:
-        # Clean up temp file
+        # Clean up
         try:
-            if 'tmp' in locals():
-                os.remove(tmp)
+            for path in [ogg_path, wav_path]:
+                if os.path.exists(path):
+                    os.remove(path)
         except Exception:
             pass
+
+
+async def process_with_gemini_multimodal(ogg_path: str, duration: float, chat_id: int, context, ack_msg):
+    """Process short audio with Gemini 2.5 Flash multimodal"""
+    # Update status
+    if ack_msg:
+        try:
+            await context.bot.edit_message_text(
+                chat_id=chat_id, message_id=ack_msg.message_id,
+                text=f"🎤 {duration:.1f}초 (짧음) - Gemini 2.5 Flash 멀티모달 분석 중..."
+            )
+        except Exception:
+            pass
+
+    # Upload audio directly to Gemini
+    import google.generativeai as genai
+    audio_data = open(ogg_path, "rb").read()
+    audio_part = {"mime_type": "audio/ogg", "data": audio_data}
+
+    prompt = (
+        "이 음성 메시지를 한국어로 전사하고 적절히 요약/답변해주세요.\n"
+        "음성 내용에 직접 답할 수 있는 질문이면 답변도 제공해주세요.\n"
+        "항상 한국어로만 답변하고, Markdown 표/코드블록 없이 간결한 문장으로 답하세요."
+    )
+
+    # Call Gemini in thread pool
+    def _call_gemini():
+        response = gemini_model.generate_content([prompt, audio_part])
+        return response.text.strip()
+
+    result = await asyncio.to_thread(_call_gemini)
+    return format_plain(result)
+
+
+async def process_with_whisper_gemini(ogg_path: str, wav_path: str, duration: float, chat_id: int, context, ack_msg):
+    """Process long audio with Whisper + Gemini"""
+    # Update status
+    if ack_msg:
+        try:
+            await context.bot.edit_message_text(
+                chat_id=chat_id, message_id=ack_msg.message_id,
+                text=f"🎤 {duration:.1f}초 (김음) - Whisper로 전사 중..."
+            )
+        except Exception:
+            pass
+
+    # Convert ogg to wav (async)
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "ffmpeg", "-y", "-i", ogg_path, "-ar", "16000", "-ac", "1", wav_path,
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+        )
+        _stdout, _stderr = await proc.communicate()
+        if proc.returncode != 0:
+            raise RuntimeError("ffmpeg 변환 실패")
+    except Exception as e:
+        raise Exception(f"오디오 변환 실패: {str(e)}")
+
+    # Update status
+    if ack_msg:
+        try:
+            await context.bot.edit_message_text(
+                chat_id=chat_id, message_id=ack_msg.message_id,
+                text=f"🎤 전사 완료! Gemini로 요약 중..."
+            )
+        except Exception:
+            pass
+
+    # Whisper transcription (in thread pool)
+    try:
+        from faster_whisper import WhisperModel
+        if not hasattr(process_with_whisper_gemini, "_whisper"):
+            process_with_whisper_gemini._whisper = WhisperModel("base", device="cpu", compute_type="int8")
+        wmodel = process_with_whisper_gemini._whisper
+
+        def _transcribe():
+            segs, _info = wmodel.transcribe(wav_path, language="ko", vad_filter=True)
+            return " ".join([s.text.strip() for s in segs if s.text]).strip()
+
+        transcription = await asyncio.to_thread(_transcribe)
+
+        if not transcription:
+            return "음성에서 텍스트를 인식하지 못했어요."
+
+        # Gemini summary (in thread pool)
+        def _summarize():
+            prompt = (
+                f"다음 음성 메시지가 전사된 텍스트입니다. 적절히 요약하거나 답변해 주세요:\n\n{transcription}\n\n"
+                "항상 한국어로만 답변하고, Markdown 표/코드블록 없이 간결한 문장으로 답하세요."
+            )
+            response = gemini_model.generate_content(prompt)
+            return response.text.strip()
+
+        result = await asyncio.to_thread(_summarize)
+        return format_plain(result)
+
+    except ImportError:
+        return "faster-whisper가 설치되어 있지 않아요. 백엔드 관리자에게 문의해주세요."
+
 
 
 async def handle_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
