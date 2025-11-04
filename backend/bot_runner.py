@@ -35,6 +35,10 @@ logging.basicConfig(
 )
 logger = logging.getLogger("unified_bot")
 
+# Disable httpx logging to prevent token exposure
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("telegram").setLevel(logging.WARNING)
+
 # telegram
 try:
     from telegram import Update
