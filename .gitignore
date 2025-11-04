@@ -63,3 +63,7 @@ logs/
 
 # Assets
 exported-assets.zip
+
+# Google Drive Service Account Keys (SECRETS - DO NOT COMMIT)
+service_account.json
+*.json (with private_key)
