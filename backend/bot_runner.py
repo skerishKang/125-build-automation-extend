@@ -4,6 +4,7 @@
 - Single file handling text/document/image/voice with Gemini 2.0 Flash
 - Free chat with memory (Supabase optional)
 - Document/Image/Voice processed directly with Gemini's multimodal capabilities
+- Google Drive bidirectional sync
 """
 import os
 import sys
@@ -208,8 +209,9 @@ async def handle_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"안녕하세요 {name}님! 👋\n\n"
         "이 봇은 Gemini 2.5 Flash 기반 \"올인원\"입니다.\n"
         "- 자유 대화 (메모리 포함)\n"
-        "- 문서/이미지/음성 멀티모달 처리\n\n"
-        "그냥 메시지를 보내거나 파일을 올려보세요.")
+        "- 문서/이미지/음성 멀티모달 처리\n"
+        "- Google Drive 양방향 동기화\n\n"
+        "도움말: /drive")
 
 
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -284,86 +286,6 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await reply_text(update, final_text)
 
     await save_memory(user_id, username, text, answer)
-
-
-async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    doc = update.message.document
-    if not doc:
-        return
-
-    # Initial message + cumulative progress tracking
-    progress_messages = []
-    progress_messages.append(await update.message.reply_text("📥 파일을 받았어요. 분석 중입니다… [0%]"))
-
-    file = await context.bot.get_file(doc.file_id)
-    tmp = os.path.join(tempfile.gettempdir(), f"{doc.file_id}_{doc.file_name}")
-    # 업로드 액션 인디케이터 시작
-    doc_indicator = ActionIndicator(context, update.effective_chat.id, ChatAction.UPLOAD_DOCUMENT)
-    await doc_indicator.__aenter__()
-    await file.download_to_drive(tmp)
-
-    # Update progress: 30%
-    progress_messages.append(await update.message.reply_text("📁 파일 다운로드 완료. 텍스트 추출 중… [30%]"))
-
-    # Only handle text files for now (simplified)
-    try:
-        content = open(tmp, 'rb').read()
-        import chardet
-        enc = chardet.detect(content).get('encoding') or 'utf-8'
-        text = content.decode(enc, errors='ignore')
-    except Exception as e:
-        await reply_text(update, f"❌ 파일 읽기 실패: {e}")
-        await doc_indicator.__aexit__(None, None, None)
-        return
-    finally:
-        try:
-            os.remove(tmp)
-        except Exception:
-            pass
-
-    if not GEMINI_API_KEY or not gemini_model:
-        await reply_text(update, "⚠️ Gemini 설정이 없어 파일 분석이 비활성화되어 있어요.")
-        await doc_indicator.__aexit__(None, None, None)
-        return
-
-    user_id = str(update.effective_user.id)
-    username = update.effective_user.first_name or "사용자"
-
-    try:
-        # Progress: 70%
-        progress_messages.append(await update.message.reply_text("🧠 Gemini 2.5 Flash 분석 중… [70%]"))
-
-        prompt = f"다음 문서를 요약/분석해줘. 파일명: {doc.file_name}\n\n{text}"
-        prompt += "\n\n항상 한국어로만 답변하고, Markdown 표/코드블록 없이 간결한 문장으로 답하세요."
-
-        # Gemini call
-        # 블로킹 추론 오프로딩
-        def _call_gemini_doc():
-            resp = gemini_model.generate_content(prompt)
-            return resp.text.strip()
-        answer = await asyncio.to_thread(_call_gemini_doc)
-        answer = format_plain(answer)
-
-        # Progress: 100%
-        progress_messages.append(await update.message.reply_text(f"✅ 분석 완료! 결과는 아래 메시지를 확인해주세요. [100%]"))
-
-    except Exception as e:
-        logger.error(f"Gemini doc error: {e}")
-        await reply_text(update, f"❌ 문서 분석 중 오류가 발생했어요: {str(e)[:100]}")
-        await doc_indicator.__aexit__(None, None, None)
-        return
-
-    # Send final result as new message (not editing)
-    final_text = f"📄 {doc.file_name} 분석 결과:\n\n{answer}"
-    await reply_text(update, final_text)
-
-    recent_documents.setdefault(int(user_id), []).append({
-        "file_name": doc.file_name,
-        "text_length": len(text),
-        "timestamp": datetime.utcnow()
-    })
-    await save_memory(user_id, username, f"[문서] {doc.file_name}", answer)
-    await doc_indicator.__aexit__(None, None, None)
 
 
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -580,7 +502,6 @@ async def process_with_whisper_gemini(ogg_path: str, wav_path: str, duration: fl
         return "faster-whisper가 설치되어 있지 않아요. 백엔드 관리자에게 문의해주세요."
 
 
-
 async def handle_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     docs = recent_documents.get(user_id, [])[-5:]
@@ -603,13 +524,16 @@ async def handle_drive(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• `/driveget <file_id>` - 드라이브에서 파일 가져오기\n"
         "• `/drivesync` - 새로 올라온 파일 확인\n\n"
         "**자동 동기화:**\n"
-        "✓ 텔레그램 파일 자동 드라이브 저장\n"
-        "✓ 드라이브 새 파일 텔레그램 알림\n\n"
+        "✓ 텔레그램 파일 자동 드라이브 저장 + Gemini 분석\n\n"
+        "**지원 파일 형식:**\n"
+        "✓ 텍스트: txt, md, py, js, html, css, json, xml, csv 등\n"
+        "✓ Office: pdf, docx, pptx, xlsx\n"
+        "✓ 압축: zip (내용 미리보기)\n\n"
         "**예시:**\n"
         "1. `/drivelist` - 전체 파일 목록 보기\n"
         "2. `/driveget 1A2B3C4D` - ID가 1A2B3C4D인 파일 다운로드\n"
         "3. `/drivesync` - 새 파일 체크\n"
-        "4. 파일 전송 → 자동 드라이브 저장\n"
+        "4. 파일 전송 → 자동 드라이브 저장 + 분석\n"
     )
     await reply_text(update, help_text)
 
@@ -729,223 +653,114 @@ async def handle_drive_sync(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await reply_text(update, f"새 파일 확인 중 오류가 발생했어요: {str(e)[:100]}")
 
 
-async def handle_document_auto_save(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Auto-save all documents to Google Drive"""
-    doc = update.message.document
-    if not doc:
-        return
+def extract_text_from_file(file_path: str, file_name: str) -> str:
+    """
+    Extract text from various file formats
+    Supports: txt, md, py, js, html, css, json, xml, csv, pdf, docx, pptx, xlsx, zip
+    """
+    import os
+    import zipfile
+    import chardet
 
-    progress_messages = []
-    progress_messages.append(await update.message.reply_text(f"📁 {doc.file_name} Google Drive 자동 저장 중... [0%]"))
-
-    file = await context.bot.get_file(doc.file_id)
-    tmp = os.path.join(tempfile.gettempdir(), f"{doc.file_id}_{doc.file_name}")
-
-    doc_indicator = ActionIndicator(context, update.effective_chat.id, ChatAction.UPLOAD_DOCUMENT)
-    await doc_indicator.__aenter__()
-    await file.download_to_drive(tmp)
-
-    progress_messages.append(await update.message.reply_text("📁 파일 다운로드 완료. 드라이브 저장 중... [30%]"))
+    file_ext = os.path.splitext(file_name)[1].lower()
 
     try:
-        from backend.services.drive_sync import upload_file
+        # 1. Text-based files (most common)
+        if file_ext in ['.txt', '.md', '.py', '.js', '.ts', '.jsx', '.tsx', '.html',
+                        '.htm', '.css', '.scss', '.sass', '.less', '.json', '.xml',
+                        '.csv', '.tsv', '.yaml', '.yml', '.ini', '.cfg', '.conf',
+                        '.log', '.sql', '.sh', '.bat', '.ps1', '.dockerfile',
+                        '.gitignore', '.env', '.properties', '.toml', '.r', '.R']:
+            with open(file_path, 'rb') as f:
+                raw_data = f.read()
+                enc = chardet.detect(raw_data).get('encoding') or 'utf-8'
+                return raw_data.decode(enc, errors='ignore')
 
-        # Upload to Google Drive
-        result = upload_file(tmp)
+        # 2. PDF files
+        elif file_ext == '.pdf':
+            try:
+                import PyPDF2
+                with open(file_path, 'rb') as f:
+                    reader = PyPDF2.PdfReader(f)
+                    text = ""
+                    for page in reader.pages:
+                        text += page.extract_text() + "\n"
+                return text
+            except ImportError:
+                return "PDF 읽기를 위한 PyPDF2가 설치되어 있지 않습니다."
 
-        if result:
-            progress_messages.append(await update.message.reply_text("✅ Google Drive 저장 완료! [100%]"))
+        # 3. Word documents (.docx)
+        elif file_ext == '.docx':
+            try:
+                from docx import Document
+                doc = Document(file_path)
+                text = ""
+                for paragraph in doc.paragraphs:
+                    text += paragraph.text + "\n"
+                return text
+            except ImportError:
+                return "DOCX 읽기를 위한 python-docx가 설치되어 있지 않습니다."
 
-            file_id = result.get('id', 'N/A')
-            web_link = result.get('webViewLink', '')
+        # 4. PowerPoint (.pptx)
+        elif file_ext == '.pptx':
+            try:
+                from pptx import Presentation
+                prs = Presentation(file_path)
+                text = ""
+                for slide in prs.slides:
+                    for shape in slide.shapes:
+                        if hasattr(shape, "text"):
+                            text += shape.text + "\n"
+                return text
+            except ImportError:
+                return "PPTX 읽기를 위한 python-pptx가 설치되어 있지 않습니다."
 
-            # Send confirmation
-            confirm_text = (
-                f"✅ **{doc.file_name}** Google Drive에 자동 저장되었습니다!\n\n"
-                f"📋 파일 ID: `{file_id}`"
-            )
-            if web_link:
-                confirm_text += f"\n🔗 [드라이브에서 보기]({web_link})"
+        # 5. Excel files (.xlsx, .xls)
+        elif file_ext in ['.xlsx', '.xls']:
+            try:
+                import pandas as pd
+                # Try to read all sheets
+                df = pd.read_excel(file_path, sheet_name=None)
+                text = ""
+                for sheet_name, sheet_df in df.items():
+                    text += f"\n=== Sheet: {sheet_name} ===\n"
+                    text += sheet_df.to_string(index=False) + "\n"
+                return text
+            except ImportError:
+                return "Excel 읽기를 위한 pandas가 설치되어 있지 않습니다."
 
-            await reply_text(update, confirm_text)
+        # 6. ZIP archives (extract and read text files inside)
+        elif file_ext == '.zip':
+            try:
+                text = "=== ZIP 아카이브 내용 ===\n"
+                with zipfile.ZipFile(file_path, 'r') as zip_ref:
+                    file_list = zip_ref.namelist()
+                    text += f"총 {len(file_list)}개 파일\n\n"
+                    for file_in_zip in file_list[:10]:  # Show first 10 files
+                        text += f"• {file_in_zip}\n"
+                        # If it's a text file, try to extract and read
+                        if any(file_in_zip.lower().endswith(ext) for ext in ['.txt', '.md', '.py', '.js', '.html', '.css', '.json', '.xml']):
+                            try:
+                                content = zip_ref.read(file_in_zip).decode('utf-8', errors='ignore')
+                                text += f"  내용 미리보기:\n{content[:500]}...\n"
+                            except:
+                                pass
+                    if len(file_list) > 10:
+                        text += f"\n... 외 {len(file_list) - 10}개 파일"
+                return text
+            except Exception as e:
+                return f"ZIP 파일 읽기 오류: {str(e)}"
 
+        # 7. Other binary files
         else:
-            progress_messages.append(await update.message.reply_text("❌ 드라이브 저장 실패 [100%]"))
-            await reply_text(update, "❌ Google Drive 저장에 실패했어요. 권한을 확인해주세요.")
+            return f"지원하지 않는 파일 형식: {file_ext}\n파일 크기: {os.path.getsize(file_path)} bytes"
 
     except Exception as e:
-        logger.error(f"Auto-save error: {e}")
-        await reply_text(update, f"자동 저장 중 오류가 발생했어요: {str(e)[:100]}")
-    finally:
-        try:
-            os.remove(tmp)
-        except Exception:
-            pass
-        await doc_indicator.__aexit__(None, None, None)
-
-
-async def handle_drive(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle /drive command - show Google Drive help and options"""
-    help_text = (
-        "📁 **Google Drive 연동 가이드**\n\n"
-        "**사용 가능한 명령어:**\n"
-        "• `/drive` - 이 도움말 보기\n"
-        "• `/drivelist` - 드라이브 파일 목록 보기\n"
-        "• `/drivefolder <폴더명>` - 새 폴더 생성\n\n"
-        "**파일 업로드:**\n"
-        "• 파일 전송 시 '/gdrive' 라고 입력하면 Google Drive에 업로드됩니다\n\n"
-        "**기능:**\n"
-        "✓ 드라이브 파일 목록 조회\n"
-        "✓ 파일/폴더 업로드\n"
-        "✓ Gemini로 드라이브 문서 분석\n"
-        "✓ 파일 공유 링크 생성\n\n"
-        "**예시:**\n"
-        "1. `/drivelist` - 루트 폴더의 파일 목록 보기\n"
-        "2. `/drivefolder 보고서` - '보고서' 폴더 생성\n"
-        "3. 파일 전송 + '/gdrive' 입력 → Google Drive 업로드\n"
-    )
-    await reply_text(update, help_text)
-
-
-async def handle_drive_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle /drivelist command - list files in Google Drive"""
-    progress_messages = []
-    progress_messages.append(await update.message.reply_text("📁 Google Drive 파일 목록 조회 중... [0%]"))
-
-    try:
-        from backend.services.google_drive import list_files
-
-        progress_messages.append(await update.message.reply_text("📂 드라이브 연결 중... [50%]"))
-
-        files = list_files(max_results=20)
-
-        if not files:
-            progress_messages.append(await update.message.reply_text("✅ 조회 완료! [100%]"))
-            await reply_text(update, "📁 드라이브에 파일이 없거나 권한이 없습니다.")
-            return
-
-        progress_messages.append(await update.message.reply_text("✅ 조회 완료! [100%]"))
-
-        # Format file list
-        file_lines = []
-        for i, file in enumerate(files, 1):
-            file_type = "📁 폴더" if file.get('mimeType') == 'application/vnd.google-apps.folder' else "📄 파일"
-            size = file.get('size', 'N/A')
-            if size != 'N/A':
-                # Convert bytes to KB or MB
-                size_int = int(size)
-                if size_int > 1024 * 1024:
-                    size = f"{size_int / (1024 * 1024):.1f}MB"
-                elif size_int > 1024:
-                    size = f"{size_int / 1024:.1f}KB"
-                else:
-                    size = f"{size_int}B"
-
-            file_lines.append(
-                f"{i}. {file_type}: {file['name']}\n"
-                f"   ID: {file['id']} | 크기: {size}"
-            )
-
-        result = f"📁 **Google Drive 파일 목록** (총 {len(files)}개):\n\n" + "\n\n".join(file_lines)
-        await reply_text(update, result)
-
-    except Exception as e:
-        logger.error(f"Drive list error: {e}")
-        await reply_text(update, f"드라이브 목록 조회 중 오류가 발생했어요: {str(e)[:100]}")
-
-
-async def handle_drive_get(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle /driveget command - download a file from Google Drive"""
-    args = context.args
-    if not args:
-        await reply_text(update, "사용법: `/driveget <file_id>`\n\n예: `/driveget 1A2B3C4D`")
-        return
-
-    file_id = args[0]
-
-    progress_messages = []
-    progress_messages.append(await update.message.reply_text(f"📥 드라이브에서 파일 다운로드 중... [0%]"))
-
-    try:
-        from backend.services.drive_sync import get_file_info, download_file
-
-        progress_messages.append(await update.message.reply_text("📂 파일 정보 조회 중... [30%]"))
-
-        file_info = get_file_info(file_id)
-
-        if not file_info:
-            progress_messages.append(await update.message.reply_text("❌ 파일을 찾을 수 없습니다 [100%]"))
-            await reply_text(update, "❌ 파일을 찾을 수 없어요. File ID를 확인해주세요.")
-            return
-
-        file_name = file_info['name']
-        progress_messages.append(await update.message.reply_text(f"📄 {file_name} 다운로드 중... [60%]"))
-
-        # Download file
-        tmp_path = os.path.join(tempfile.gettempdir(), f"drive_download_{file_id}_{file_name}")
-        success = download_file(file_id, tmp_path)
-
-        if not success:
-            progress_messages.append(await update.message.reply_text("❌ 다운로드 실패 [100%]"))
-            await reply_text(update, "❌ 파일 다운로드에 실패했어요.")
-            return
-
-        progress_messages.append(await update.message.reply_text("✅ 다운로드 완료! [100%]"))
-
-        # Send file to Telegram
-        with open(tmp_path, 'rb') as f:
-            from telegram import InputFile
-            await context.bot.send_document(
-                chat_id=update.effective_chat.id,
-                document=InputFile(f, filename=file_name),
-                caption=f"📄 **드라이브에서 가져온 파일**: {file_name}"
-            )
-
-        # Clean up
-        try:
-            os.remove(tmp_path)
-        except Exception:
-            pass
-
-    except Exception as e:
-        logger.error(f"Drive get error: {e}")
-        await reply_text(update, f"파일 다운로드 중 오류가 발생했어요: {str(e)[:100]}")
-
-
-async def handle_drive_sync(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle /drivesync command - check for new files in Google Drive"""
-    progress_messages = []
-    progress_messages.append(await update.message.reply_text("🔍 드라이브 새 파일 확인 중... [0%]"))
-
-    try:
-        from backend.services.drive_sync import check_new_files
-
-        progress_messages.append(await update.message.reply_text("📂 드라이브 스캔 중... [50%]"))
-
-        new_files = check_new_files()
-
-        progress_messages.append(await update.message.reply_text("✅ 확인 완료! [100%]"))
-
-        if not new_files:
-            await reply_text(update, "📭 새 파일이 없습니다.")
-            return
-
-        # Format new files list
-        lines = [f"🆕 **새로 올라온 파일** ({len(new_files)}개):\n"]
-        for i, file in enumerate(new_files, 1):
-            file_type = "📁 폴더" if file.get('mimeType') == 'application/vnd.google-apps.folder' else "📄 파일"
-            lines.append(f"{i}. {file_type}: **{file['name']}**")
-            lines.append(f"   ID: `{file['id']}`")
-
-        await reply_text(update, "\n".join(lines))
-
-    except Exception as e:
-        logger.error(f"Drive sync error: {e}")
-        await reply_text(update, f"새 파일 확인 중 오류가 발생했어요: {str(e)[:100]}")
+        return f"파일 읽기 오류: {str(e)}"
 
 
 async def handle_document_auto_save(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Auto-save all documents to Google Drive"""
+    """Auto-save all documents to Google Drive and analyze with Gemini"""
     doc = update.message.document
     if not doc:
         return
@@ -983,6 +798,34 @@ async def handle_document_auto_save(update: Update, context: ContextTypes.DEFAUL
                 confirm_text += f"\n🔗 [드라이브에서 보기]({web_link})"
 
             await reply_text(update, confirm_text)
+
+            # Analyze with Gemini if GEMINI is available
+            if GEMINI_API_KEY and gemini_model:
+                try:
+                    progress_messages.append(await update.message.reply_text("🧠 Gemini 문서 분석 중... [70%]"))
+
+                    # Extract text based on file type
+                    extracted_text = extract_text_from_file(tmp, doc.file_name)
+
+                    if extracted_text and len(extracted_text.strip()) > 0:
+                        prompt = f"다음 문서를 요약/분석해줘. 파일명: {doc.file_name}\n\n{extracted_text}"
+                        prompt += "\n\n항상 한국어로만 답변하고, Markdown 표/코드블록 없이 간결한 문장으로 답하세요."
+
+                        def _call_gemini_doc():
+                            resp = gemini_model.generate_content(prompt)
+                            return resp.text.strip()
+
+                        answer = await asyncio.to_thread(_call_gemini_doc)
+                        answer = format_plain(answer)
+
+                        analysis_text = f"\n\n📄 **문서 분석 결과**:\n\n{answer}"
+                        await reply_text(update, analysis_text)
+                    else:
+                        logger.warning(f"No text extracted from {doc.file_name}")
+
+                except Exception as e:
+                    logger.error(f"Document analysis error: {e}")
+                    # Don't fail the upload if analysis fails
 
         else:
             progress_messages.append(await update.message.reply_text("❌ 드라이브 저장 실패 [100%]"))
