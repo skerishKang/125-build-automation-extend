@@ -168,20 +168,24 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             response.raise_for_status()
             result = response.json()
-            logger.info(f"MiniMax response: {result}")  # 디버깅용 로깅
-            # MiniMax 응답 형식: content[0] = thinking, content[1] = actual answer
+            # 디버깅용: 응답 요약만 출력 (토큰 노출 방지)
             content = result.get("content", [])
             if content and isinstance(content, list):
                 # 찾기: 'text' 타입의 답변
                 for item in content:
                     if item.get("type") == "text":
                         answer = item.get("text", "(응답이 비어있어요)")
+                        # 마크다운 → plain text 변환 (| 테이블 등 제거)
+                        answer = answer.replace('|', ' ').replace('**', '').replace('\\n', ' ')
+                        # 응답 길이 제한 (500자 이내)
+                        if len(answer) > 500:
+                            answer = answer[:500] + "..."
                         break
                 else:
-                    # 'text' 타입이 없으면 첫 번째 항목
-                    answer = content[0].get("text", "(응답이 비어있어요)")
+                    answer = "(응답이 비어있어요)"
             else:
-                answer = str(result)  # 전체 응답을 문자열로
+                answer = "(응답이 비어있어요)"
+            logger.info(f"Bot replied ({len(answer)} chars): {answer[:100]}...")
     except Exception as e:
         logger.error(f"MiniMax error: {e}")
         answer = "죄송해요, 지금은 답변을 생성할 수 없어요."
