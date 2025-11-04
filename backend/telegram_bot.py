@@ -61,10 +61,11 @@ async def summarize_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     latest_doc = user_docs[user_id][-1]
-    await update.message.reply_text("📝 요약 중...")
+    # 즉시 수신 확인 메시지로 대기 체감 감소
+    ack_msg = await update.message.reply_text("📝 요약 중…")
 
     try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
+        async with httpx.AsyncClient(timeout=60.0) as client:
             files = {
                 'file': (
                     latest_doc['file_name'],
@@ -82,12 +83,28 @@ async def summarize_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             else:
                 summary = f"❌ 서비스 오류: {response.status_code}"
 
-        response = f"**{latest_doc['file_name']}**\n\n{summary}"
-        await update.message.reply_text(response, parse_mode='Markdown')
+        final_text = f"**{latest_doc['file_name']}**\n\n{summary}"
+        # 완료 시 기존 메시지를 결과로 교체 (실패 시 새로 전송)
+        try:
+            await context.bot.edit_message_text(
+                chat_id=update.effective_chat.id,
+                message_id=ack_msg.message_id,
+                text=final_text,
+                parse_mode='Markdown'
+            )
+        except Exception:
+            await update.message.reply_text(final_text, parse_mode='Markdown')
 
     except Exception as e:
         logger.error(f"요약 실패: {e}")
-        await update.message.reply_text(f"❌ 오류: {str(e)}")
+        try:
+            await context.bot.edit_message_text(
+                chat_id=update.effective_chat.id,
+                message_id=ack_msg.message_id,
+                text=f"❌ 오류: {str(e)}"
+            )
+        except Exception:
+            await update.message.reply_text(f"❌ 오류: {str(e)}")
 
 async def handle_doc(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """문서 처리"""
@@ -112,7 +129,7 @@ async def handle_doc(update: Update, context: ContextTypes.DEFAULT_TYPE):
         encoding = chardet.detect(content).get('encoding', 'utf-8')
         text = content.decode(encoding, errors='ignore')
 
-        # 저장
+        # 저장 (임시 파일은 정리)
         if user_id not in user_docs:
             user_docs[user_id] = []
 
@@ -121,6 +138,11 @@ async def handle_doc(update: Update, context: ContextTypes.DEFAULT_TYPE):
             'text': text,
             'timestamp': datetime.now()
         })
+        try:
+            if os.path.exists(file_path):
+                os.remove(file_path)
+        except Exception:
+            pass
 
         # 최대 5개까지만
         if len(user_docs[user_id]) > 5:

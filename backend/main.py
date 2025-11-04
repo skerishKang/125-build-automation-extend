@@ -129,8 +129,16 @@ async def summarize_document(file: UploadFile = File(...)):
             raise HTTPException(status_code=400, detail="텍스트를 추출할 수 없습니다")
 
         # 요약
-        summary = summarize_text(text, file.filename or "Document")
-        return {"summary": summary}
+        result = summarize_text(text, file.filename or "Document")
+        # ai_service는 dict를 반환하므로, 소비자가 기대하는 평문 요약으로 정규화
+        if isinstance(result, dict):
+            return {
+                "summary": result.get("data", ""),
+                "status": result.get("status", "unknown"),
+                "model": result.get("model", "none")
+            }
+        # 혹시 문자열을 반환하는 구현이라면 그대로 전달
+        return {"summary": str(result)}
 
     except HTTPException:
         raise
@@ -153,8 +161,14 @@ async def analyze_document_endpoint(file: UploadFile = File(...)):
             raise HTTPException(status_code=400, detail="텍스트를 추출할 수 없습니다")
 
         # 분석
-        analysis = analyze_document(text, file.filename or "Document")
-        return {"analysis": analysis}
+        result = analyze_document(text, file.filename or "Document")
+        if isinstance(result, dict):
+            return {
+                "analysis": result.get("data", ""),
+                "status": result.get("status", "unknown"),
+                "model": result.get("model", "none")
+            }
+        return {"analysis": str(result)}
 
     except HTTPException:
         raise

@@ -4,12 +4,12 @@ python-dotenv
 python-telegram-bot==21.6
 httpx
 supabase
-faster-whisper
 requests
 beautifulsoup4
 openpyxl
 python-pptx
 watchdog
+google-generativeai
 pydantic
 chardet
 sqlalchemy

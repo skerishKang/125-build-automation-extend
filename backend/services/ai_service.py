@@ -39,10 +39,7 @@ VECTOR_STORE_PATH = os.getenv('VECTOR_STORE_PATH', 'data/store')
 GEN_TEMPERATURE = float(os.getenv('GEN_TEMPERATURE', '0.2'))
 GEN_MAX_OUTPUT_TOKENS = int(os.getenv('GEN_MAX_OUTPUT_TOKENS', '2048'))
 
-# Gemini 모델 초기화 (API 키가 있을 때만)
-if not GEMINI_API_KEY:
-    raise RuntimeError("❌ Missing GEMINI_API_KEY in environment variables.")
-
+# Gemini 모델 초기화 (API 키가 있을 때만). 없는 경우 서버는 구동되며 함수가 친절히 오류 반환.
 model = None
 if GEMINI_API_KEY:
     try:
@@ -75,6 +72,8 @@ if GEMINI_API_KEY:
         logger.error("pip install google-generativeai를 실행해주세요")
     except Exception as e:
         logger.error(f"Gemini AI 초기화 실패: {e}")
+else:
+    logger.warning("GEMINI_API_KEY가 설정되지 않아 Gemini 기능이 비활성화됩니다.")
 
 # RAG 관련 모듈 (선택적 로딩)
 faiss = None
