@@ -17,7 +17,6 @@ from dotenv import load_dotenv
 load_dotenv(os.path.join(os.path.dirname(__file__), ".env"))
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 MINIMAX_API_TOKEN = os.getenv("MINIMAX_API_TOKEN")
 MINIMAX_BASE_URL = os.getenv("MINIMAX_BASE_URL", "https://api.minimax.io/anthropic")
 SUPABASE_URL = os.getenv("SUPABASE_URL")
@@ -189,23 +188,40 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             response.raise_for_status()
             result = response.json()
-            # 디버깅용: 응답 요약만 출력 (토큰 노출 방지)
+            # 로깅: 전체 응답 확인 (첫 200자만)
+            logger.info(f"Raw MiniMax response (first 200 chars): {str(result)[:200]}...")
+
+            # 개선된 응답 파싱
             content = result.get("content", [])
-            if content and isinstance(content, list):
-                # 찾기: 'text' 타입의 답변
-                for item in content:
-                    if item.get("type") == "text":
-                        answer = item.get("text", "(응답이 비어있어요)")
-                        # 마크다운 → plain text 변환 (| 테이블 등 제거)
-                        answer = answer.replace('|', ' ').replace('**', '').replace('\\n', ' ')
-                        # 응답 길이 제한 (500자 이내)
-                        if len(answer) > 500:
-                            answer = answer[:500] + "..."
-                        break
-                else:
-                    answer = "(응답이 비어있어요)"
-            else:
+            answer = None
+
+            if content:
+                if isinstance(content, list):
+                    # 리스트인 경우: 'text' 타입 찾기
+                    for item in content:
+                        if isinstance(item, dict) and item.get("type") == "text":
+                            text = item.get("text", "").strip()
+                            if text:
+                                answer = text
+                                break
+                    # 'text' 타입이 없으면 첫 번째 아이템 사용
+                    if not answer and content:
+                        first_item = content[0]
+                        if isinstance(first_item, dict):
+                            answer = first_item.get("text", "").strip() or first_item.get("content", "").strip()
+                elif isinstance(content, str):
+                    # 문자열인 경우 직접 사용
+                    answer = content.strip()
+
+            if not answer:
                 answer = "(응답이 비어있어요)"
+
+            # 마크다운 → plain text 변환 (| 테이블 등 제거)
+            answer = answer.replace('|', ' ').replace('**', '').replace('\\n', ' ').replace('\n', ' ')
+            # 응답 길이 제한 (500자 이내)
+            if len(answer) > 500:
+                answer = answer[:500] + "..."
+
             logger.info(f"Bot replied ({len(answer)} chars): {answer[:100]}...")
     except Exception as e:
         logger.error(f"MiniMax error: {e}")
@@ -273,7 +289,38 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             response.raise_for_status()
             result = response.json()
-            answer = result.get("content", [{}])[0].get("text", "(응답이 비어있어요)")
+            # 로깅: 전체 응답 확인 (첫 200자만)
+            logger.info(f"Doc MiniMax response (first 200 chars): {str(result)[:200]}...")
+
+            # 개선된 응답 파싱
+            content = result.get("content", [])
+            answer = None
+
+            if content:
+                if isinstance(content, list):
+                    # 리스트인 경우: 'text' 타입 찾기
+                    for item in content:
+                        if isinstance(item, dict) and item.get("type") == "text":
+                            text = item.get("text", "").strip()
+                            if text:
+                                answer = text
+                                break
+                    # 'text' 타입이 없으면 첫 번째 아이템 사용
+                    if not answer and content:
+                        first_item = content[0]
+                        if isinstance(first_item, dict):
+                            answer = first_item.get("text", "").strip() or first_item.get("content", "").strip()
+                elif isinstance(content, str):
+                    # 문자열인 경우 직접 사용
+                    answer = content.strip()
+
+            if not answer:
+                answer = "(응답이 비어있어요)"
+
+            # 마크다운 제거
+            answer = answer.replace('|', ' ').replace('**', '').replace('\\n', ' ').replace('\n', ' ')
+            if len(answer) > 500:
+                answer = answer[:500] + "..."
     except Exception as e:
         logger.error(f"MiniMax doc error: {e}")
         answer = "문서 분석 중 오류가 발생했어요."
@@ -322,7 +369,38 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             response.raise_for_status()
             result = response.json()
-            answer = result.get("content", [{}])[0].get("text", "이미지 설명 생성 실패")
+            # 로깅: 전체 응답 확인 (첫 200자만)
+            logger.info(f"Photo MiniMax response (first 200 chars): {str(result)[:200]}...")
+
+            # 개선된 응답 파싱
+            content = result.get("content", [])
+            answer = None
+
+            if content:
+                if isinstance(content, list):
+                    # 리스트인 경우: 'text' 타입 찾기
+                    for item in content:
+                        if isinstance(item, dict) and item.get("type") == "text":
+                            text = item.get("text", "").strip()
+                            if text:
+                                answer = text
+                                break
+                    # 'text' 타입이 없으면 첫 번째 아이템 사용
+                    if not answer and content:
+                        first_item = content[0]
+                        if isinstance(first_item, dict):
+                            answer = first_item.get("text", "").strip() or first_item.get("content", "").strip()
+                elif isinstance(content, str):
+                    # 문자열인 경우 직접 사용
+                    answer = content.strip()
+
+            if not answer:
+                answer = "이미지 설명 생성 실패"
+
+            # 마크다운 제거
+            answer = answer.replace('|', ' ').replace('**', '').replace('\\n', ' ').replace('\n', ' ')
+            if len(answer) > 500:
+                answer = answer[:500] + "..."
         await reply_text(update, f"🖼️ 이미지 설명:\n{answer}")
     except Exception as e:
         logger.error(f"photo error: {e}")
@@ -386,11 +464,38 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 )
                 response.raise_for_status()
                 result = response.json()
+                # 로깅: 전체 응답 확인 (첫 200자만)
+                logger.info(f"Voice MiniMax response (first 200 chars): {str(result)[:200]}...")
+
+                # 개선된 응답 파싱
                 content = result.get("content", [])
-                if content and isinstance(content, list):
-                    answer = content[0].get("text", "처리 실패")
-                else:
+                answer = None
+
+                if content:
+                    if isinstance(content, list):
+                        # 리스트인 경우: 'text' 타입 찾기
+                        for item in content:
+                            if isinstance(item, dict) and item.get("type") == "text":
+                                text = item.get("text", "").strip()
+                                if text:
+                                    answer = text
+                                    break
+                        # 'text' 타입이 없으면 첫 번째 아이템 사용
+                        if not answer and content:
+                            first_item = content[0]
+                            if isinstance(first_item, dict):
+                                answer = first_item.get("text", "").strip() or first_item.get("content", "").strip()
+                    elif isinstance(content, str):
+                        # 문자열인 경우 직접 사용
+                        answer = content.strip()
+
+                if not answer:
                     answer = "처리 실패"
+
+                # 마크다운 제거
+                answer = answer.replace('|', ' ').replace('**', '').replace('\\n', ' ').replace('\n', ' ')
+                if len(answer) > 500:
+                    answer = answer[:500] + "..."
 
             await reply_text(update, f"🎤 **전사된 텍스트:**\n{transcription}\n\n📝 **처리 결과:**\n{answer}")
         except ImportError:
@@ -424,7 +529,7 @@ async def handle_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
 def main():
     print("=== 125 Unified Telegram Bot ===")
     print(f"TELEGRAM_BOT_TOKEN: {'Set' if TELEGRAM_BOT_TOKEN else 'Not Found'}")
-    print(f"GEMINI_API_KEY: {'Set' if GEMINI_API_KEY else 'Not Found'}")
+    print(f"MINIMAX_API_TOKEN: {'Set' if MINIMAX_API_TOKEN else 'Not Found'}")
     print(f"Supabase: {'Set' if (SUPABASE_URL and SUPABASE_KEY) else 'Not Set'}")
 
     if not TELEGRAM_BOT_TOKEN:
