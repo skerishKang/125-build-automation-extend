@@ -965,10 +965,13 @@ def main():
     app.add_handler(MessageHandler(filters.VOICE, handle_voice))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
 
-    # Start Drive monitoring worker
-    if ENABLE_DRIVE_MONITORING:
-        logger.info("Starting Drive monitoring worker...")
-        app.create_task(monitor_drive_changes())
+    # Start Drive monitoring worker after polling starts
+    async def start_monitoring(app):
+        if ENABLE_DRIVE_MONITORING:
+            logger.info("Starting Drive monitoring worker...")
+            asyncio.create_task(monitor_drive_changes())
+
+    app.post_init(start_monitoring)
 
     logger.info("Handlers registered. Starting polling...")
     app.run_polling()
