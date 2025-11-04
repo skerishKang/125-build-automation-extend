@@ -7,24 +7,24 @@ from fastapi.middleware.cors import CORSMiddleware
 
 # Support both package and module execution
 try:
-    from .routers import verify_keys  # type: ignore
-except ImportError:  # pragma: no cover
     from routers import verify_keys  # type: ignore
-
-try:
-    from .models.user import init_db  # type: ignore
 except ImportError:  # pragma: no cover
-    from models.user import init_db  # type: ignore
+    from .routers import verify_keys  # type: ignore
 
 try:
-    from .services.ai_service import (
+    from models.user import init_db  # type: ignore
+except ImportError:  # pragma: no cover
+    from .models.user import init_db  # type: ignore
+
+try:
+    from services.ai_service import (
         summarize_text,
         analyze_document,
         rag_answer,
         health_check as ai_health_check
     )
 except ImportError:  # pragma: no cover
-    from services.ai_service import (
+    from .services.ai_service import (
     summarize_text,
     analyze_document,
     rag_answer,

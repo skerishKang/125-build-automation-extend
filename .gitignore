@@ -55,3 +55,7 @@ venv.bak/
 *.swp
 *.swo
 *~
+
+# Log files
+*.log
+logs/

@@ -4,12 +4,12 @@
 별도 프로세스로 실행되는 텔레그램 봇
 """
 import os
-import asyncio
-import tempfile
 import sys
 import logging
 from datetime import datetime
-from typing import Optional, Dict, List, Any
+from typing import Dict, List, Any
+import aiohttp
+import tempfile
 
 # 환경변수 로드
 from dotenv import load_dotenv
@@ -21,15 +21,21 @@ TELEGRAM_BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
 GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
 
 # 로깅 설정
+log_dir = "logs"
+os.makedirs(log_dir, exist_ok=True)
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler(os.path.join(log_dir, "bot_runner.log")),
+        logging.StreamHandler()
+    ]
 )
 logger = logging.getLogger(__name__)
 
 # 텔레그램 관련 import
 try:
-    from telegram import Update, Document
+    from telegram import Update
     from telegram.ext import (
         Application, CommandHandler, MessageHandler,
         ContextTypes, filters
@@ -48,20 +54,6 @@ async def log_update(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.info("UPDATE type=%s chat=%s", utype, chat_id)
     except Exception:
         pass
-
-
-# AI 서비스 import (동적으로)
-ai_service = None
-try:
-    from backend.services.ai_service import summarize_text, analyze_document, rag_answer
-    ai_service = 'backend'
-except ImportError:
-    try:
-        from services.ai_service import summarize_text, analyze_document, rag_answer
-        ai_service = 'local'
-    except ImportError:
-        logger.warning("AI 서비스를 찾을 수 없습니다")
-
 
 # 글로벌 변수: 사용자별 최근 문서 저장
 recent_documents: Dict[int, List[Dict[str, Any]]] = {}
@@ -83,7 +75,8 @@ async def handle_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• 문서 상세 분석 (/analyze)\n"
         "• RAG 기반 질문 (/ask)\n"
         "• 문서 목록 (/list)\n\n"
-        "문서를 업로드하거나 '/help'를 입력해보세요!"
+        "문서를 업로드하거나 '/help'를 입력해보세요!",
+        parse_mode='Markdown'
     )
 
 
@@ -113,30 +106,36 @@ async def handle_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 💡 **팁:** 여러 문서를 업로드하면 최근 5개까지 저장됩니다.
 """
-    await update.message.reply_text(help_text)
+    await update.message.reply_text(help_text, parse_mode='Markdown')
 
 
 async def handle_health(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """서비스 상태 확인"""
-    if ai_service:
-        try:
-            if ai_service == 'backend':
-                from backend.services.ai_service import health_check
-            else:
-                from services.ai_service import health_check
+    try:
+        # AI 서비스 상태는 FastAPI 백엔드에서 가져옴
+        async with aiohttp.ClientSession() as session:
+            async with session.get("http://127.0.0.1:8000/api/health") as resp:
+                if resp.status == 200:
+                    status = await resp.json()
+                else:
+                    error_detail = await resp.text()
+                    logger.error(f"FastAPI health check 요청 실패: {resp.status} - {error_detail}")
+                    status = {"gemini_ai": False, "rag_enabled": False, "rag_initialized": False, "error": f"FastAPI health check 실패: {resp.status}"}
 
-            status = health_check()
+        status_text = "🔍 **서비스 상태**\n\n"
+        status_text += (
+            f"• Gemini AI: {'✅ 활성화' if status.get('gemini_ai') else '❌ 비활성화'}\n"
+            f"• RAG 시스템: {'✅ 활성화' if status.get('rag_enabled') else '❌ 비활성화'}\n"
+            f"• RAG 초기화: {'✅ 완료' if status.get('rag_initialized') else '❌ 미완료'}\n"
+        )
+        if status.get("error"):
+            status_text += f"• 오류: {status['error']}\n"
 
-            status_text = "🔍 서비스 상태\n\n"
-            status_text += f"• Gemini AI: {'활성화' if status.get('gemini_ai') else '비활성화'}\n"
-            status_text += f"• RAG 시스템: {'활성화' if status.get('rag_enabled') else '비활성화'}\n"
-            status_text += f"• RAG 초기화: {'완료' if status.get('rag_initialized') else '미완료'}\n"
+        await update.message.reply_text(status_text, parse_mode='Markdown')
 
-            await update.message.reply_text(status_text)
-        except Exception as e:
-            await update.message.reply_text(f"❌ 상태 확인 실패: {str(e)}")
-    else:
-        await update.message.reply_text("❌ AI 서비스를 사용할 수 없습니다")
+    except Exception as e:
+        logger.error(f"상태 확인 실패: {e}")
+        await update.message.reply_text(f"❌ 상태 확인 중 오류가 발생했습니다: {str(e)}")
 
 
 async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -205,15 +204,14 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 os.remove(old_doc['file_path'])
 
         await update.message.reply_text(
-            (
-                "📎 문서 저장 완료\n\n"
-                f"파일명: {file_name}\n"
-                f"크기: {len(text)}자\n\n"
-                "분석을 원하시면 다음 명령어를 사용하세요:\n"
-                "• /summarize - 문서 요약\n"
-                "• /analyze - 문서 분석\n"
-                "• /ask [질문] - 질문하기"
-            )
+            f"📎 **문서 저장 완료**\n\n"
+            f"**파일명:** {file_name}\n"
+            f"**크기:** {len(text)}자\n\n"
+            f"분석을 원하시면 다음 명령어를 사용하세요:\n"
+            f"• `/summarize` - 문서 요약\n"
+            f"• `/analyze` - 문서 분석\n"
+            f"• `/ask [질문]` - 질문하기",
+            parse_mode='Markdown'
         )
 
     except Exception as e:
@@ -229,23 +227,37 @@ async def handle_summarize(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ 최근에 업로드한 문서가 없습니다. 먼저 문서를 업로드해주세요.")
         return
 
-    if not ai_service:
-        await update.message.reply_text("❌ AI 서비스를 사용할 수 없습니다")
-        return
-
     try:
         latest_doc = recent_documents[user_id][-1]
 
         await update.message.reply_text("📝 문서를 요약하고 있습니다...")
 
-        summary = summarize_text(latest_doc['text'], latest_doc['file_name'])
+        async with aiohttp.ClientSession() as session:
+            # FastAPI 백엔드에 요청
+            async with session.post(
+                "http://127.0.0.1:8000/api/summarize",
+                data={
+                    'file': (
+                        latest_doc['file_name'],
+                        latest_doc['text'].encode('utf-8'),
+                        'text/plain'
+                    )
+                }
+            ) as resp:
+                if resp.status == 200:
+                    result = await resp.json()
+                    summary = result.get("summary", "요약 결과를 가져올 수 없습니다.")
+                else:
+                    error_detail = await resp.text()
+                    logger.error(f"FastAPI 요약 요청 실패: {resp.status} - {error_detail}")
+                    summary = f"❌ 요약 서비스 호출 실패: {resp.status}"
 
         response_msg = f"📄 **문서 요약 결과**\n\n**파일:** {latest_doc['file_name']}\n\n{summary}"
 
         if len(response_msg) > 4000:
             response_msg = response_msg[:3997] + "..."
 
-        await update.message.reply_text(response_msg)
+        await update.message.reply_text(response_msg, parse_mode='Markdown')
 
     except Exception as e:
         logger.error(f"문서 요약 실패: {e}")
@@ -260,23 +272,37 @@ async def handle_analyze(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ 최근에 업로드한 문서가 없습니다. 먼저 문서를 업로드해주세요.")
         return
 
-    if not ai_service:
-        await update.message.reply_text("❌ AI 서비스를 사용할 수 없습니다")
-        return
-
     try:
         latest_doc = recent_documents[user_id][-1]
 
         await update.message.reply_text("🔍 문서를 분석하고 있습니다...")
 
-        analysis = analyze_document(latest_doc['text'], latest_doc['file_name'])
+        async with aiohttp.ClientSession() as session:
+            # FastAPI 백엔드에 요청
+            async with session.post(
+                "http://127.0.0.1:8000/api/analyze",
+                data={
+                    'file': (
+                        latest_doc['file_name'],
+                        latest_doc['text'].encode('utf-8'),
+                        'text/plain'
+                    )
+                }
+            ) as resp:
+                if resp.status == 200:
+                    result = await resp.json()
+                    analysis = result.get("analysis", "분석 결과를 가져올 수 없습니다.")
+                else:
+                    error_detail = await resp.text()
+                    logger.error(f"FastAPI 분석 요청 실패: {resp.status} - {error_detail}")
+                    analysis = f"❌ 분석 서비스 호출 실패: {resp.status}"
 
         response_msg = f"📊 **문서 분석 결과**\n\n**파일:** {latest_doc['file_name']}\n\n{analysis}"
 
         if len(response_msg) > 4000:
             response_msg = response_msg[:3997] + "..."
 
-        await update.message.reply_text(response_msg)
+        await update.message.reply_text(response_msg, parse_mode='Markdown')
 
     except Exception as e:
         logger.error(f"문서 분석 실패: {e}")
@@ -300,7 +326,7 @@ async def handle_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
         response = "📂 **저장된 문서 목록**\n\n" + "\n".join(doc_list)
         response += f"\n\n총 {len(recent_documents[user_id])}개 문서가 저장되어 있습니다."
 
-        await update.message.reply_text(response)
+        await update.message.reply_text(response, parse_mode='Markdown')
 
     except Exception as e:
         logger.error(f"문서 목록 조회 실패: {e}")
@@ -309,10 +335,6 @@ async def handle_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def handle_ask(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """RAG 질문 핸들러"""
-    if not ai_service:
-        await update.message.reply_text("❌ AI 서비스를 사용할 수 없습니다")
-        return
-
     try:
         query = " ".join(context.args)
         if not query:
@@ -321,14 +343,25 @@ async def handle_ask(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         user_id = str(update.effective_user.id)
 
-        answer = rag_answer(query, user_id)
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                "http://127.0.0.1:8000/api/qa",
+                json={'query': query, 'user_id': user_id}
+            ) as resp:
+                if resp.status == 200:
+                    result = await resp.json()
+                    answer = result.get("answer", "답변을 가져올 수 없습니다.")
+                else:
+                    error_detail = await resp.text()
+                    logger.error(f"FastAPI QA 요청 실패: {resp.status} - {error_detail}")
+                    answer = f"❌ 질문 서비스 호출 실패: {resp.status}"
 
         response_msg = f"🤖 **질문:** {query}\n\n**답변:**\n{answer}"
 
         if len(response_msg) > 4000:
             response_msg = response_msg[:3997] + "..."
 
-        await update.message.reply_text(response_msg)
+        await update.message.reply_text(response_msg, parse_mode='Markdown')
 
     except Exception as e:
         logger.error(f"질문 처리 실패: {e}")
@@ -360,7 +393,6 @@ def main():
     print(f"Env file: {env_file_path}")
     print(f"TELEGRAM_BOT_TOKEN: {'Set' if TELEGRAM_BOT_TOKEN else 'Not Found'}")
     print(f"GEMINI_API_KEY: {'Set' if GEMINI_API_KEY else 'Not Found'}")
-    print(f"AI Service: {'Available' if ai_service else 'Not Available'}")
     print("===========================================")
 
     if not TELEGRAM_BOT_TOKEN:
@@ -376,7 +408,7 @@ def main():
         resp = requests.get(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/getMe", timeout=10)
         if resp.ok:
             info = resp.json().get('result', {})
-            print(f"BOT @{info.get('username')} ({info.get('id')})")
+            logger.info(f"BOT @%s (%s)", info.get('username'), info.get('id'))
     except Exception as e:
         logger.warning(f"getMe request failed: {e}")
 
