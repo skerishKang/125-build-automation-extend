@@ -72,6 +72,34 @@ if SUPABASE_URL and SUPABASE_KEY:
 recent_documents: Dict[int, List[Dict[str, Any]]] = {}
 
 
+def format_plain(text: str, max_len: int = 1200) -> str:
+    """MiniMax 응답을 텔레그램용 일반 텍스트로 포맷팅"""
+    import re
+    # 코드블록 제거
+    text = re.sub(r"```.*?```", "", text, flags=re.DOTALL)
+    # 표 제거
+    text = re.sub(r"\|.*\|", "", text)
+    # 헤더 기호 제거 (개행 유지)
+    text = re.sub(r"^#{1,6}\s*", "", text, flags=re.MULTILINE)
+    # 목록 기호를 더 간결하게 (개행 유지)
+    text = re.sub(r"^\s*[-*•]\s*", "• ", text, flags=re.MULTILINE)
+    text = re.sub(r"^\s*\d+\.\s*", "• ", text, flags=re.MULTILINE)
+    # 굵게/기울임 제거
+    text = text.replace("**", "").replace("*", "")
+    # backtick 제거
+    text = text.replace("`", "'")
+    # 연속된 개행 정리 (최대 2개)
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    # 줄 끝 공백 제거
+    text = "\n".join(line.rstrip() for line in text.split("\n"))
+    # 전후 공백 제거
+    text = text.strip()
+    # 길이 제한 (...) 추가
+    if len(text) > max_len:
+        text = text[:max_len] + "…"
+    return text
+
+
 async def save_memory(user_id: str, username: str, message: str, response: str):
     if not supabase:
         return
@@ -176,6 +204,10 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "max_tokens": max_tokens,
                 "messages": [
                     {
+                        "role": "system",
+                        "content": "당신은 한국어 어시스턴트입니다. 항상 한국어로만 답변하고, Markdown 표/코드블록 없이 간결한 문장으로 답하세요."
+                    },
+                    {
                         "role": "user",
                         "content": prompt
                     }
@@ -216,11 +248,8 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if not answer:
                 answer = "(응답이 비어있어요)"
 
-            # 마크다운 → plain text 변환 (| 테이블 등 제거)
-            answer = answer.replace('|', ' ').replace('**', '').replace('\\n', ' ').replace('\n', ' ')
-            # 응답 길이 제한 (500자 이내)
-            if len(answer) > 500:
-                answer = answer[:500] + "..."
+            # 텔레그램용 포맷팅 적용
+            answer = format_plain(answer)
 
             logger.info(f"Bot replied ({len(answer)} chars): {answer[:100]}...")
     except Exception as e:
@@ -277,6 +306,10 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "max_tokens": max_tokens,
                 "messages": [
                     {
+                        "role": "system",
+                        "content": "당신은 한국어 어시스턴트입니다. 항상 한국어로만 답변하고, Markdown 표/코드블록 없이 간결한 문장으로 답하세요."
+                    },
+                    {
                         "role": "user",
                         "content": prompt
                     }
@@ -317,10 +350,8 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if not answer:
                 answer = "(응답이 비어있어요)"
 
-            # 마크다운 제거
-            answer = answer.replace('|', ' ').replace('**', '').replace('\\n', ' ').replace('\n', ' ')
-            if len(answer) > 500:
-                answer = answer[:500] + "..."
+            # 텔레그램용 포맷팅 적용
+            answer = format_plain(answer)
     except Exception as e:
         logger.error(f"MiniMax doc error: {e}")
         answer = "문서 분석 중 오류가 발생했어요."
@@ -357,8 +388,12 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "max_tokens": max_tokens,
                 "messages": [
                     {
+                        "role": "system",
+                        "content": "당신은 한국어 어시스턴트입니다. 항상 한국어로만 답변하고, Markdown 표/코드블록 없이 간결한 문장으로 답하세요."
+                    },
+                    {
                         "role": "user",
-                        "content": "이미지를 설명하는 캡션을 만들어줘. (이미지의 주요 내용, 톤, 색감, 맥락 추정)"
+                        "content": "다음 이미지를 한국어로 설명하는 캡션을 작성해줘. 이미지의 주요 내용, 색감/분위기, 맥락을 간결하게 설명해주세요."
                     }
                 ]
             }
@@ -397,10 +432,8 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if not answer:
                 answer = "이미지 설명 생성 실패"
 
-            # 마크다운 제거
-            answer = answer.replace('|', ' ').replace('**', '').replace('\\n', ' ').replace('\n', ' ')
-            if len(answer) > 500:
-                answer = answer[:500] + "..."
+            # 텔레그램용 포맷팅 적용
+            answer = format_plain(answer)
         await reply_text(update, f"🖼️ 이미지 설명:\n{answer}")
     except Exception as e:
         logger.error(f"photo error: {e}")
@@ -418,22 +451,31 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
         wav_path = os.path.join(tempfile.gettempdir(), f"{voice.file_id}.wav")
         await file.download_to_drive(ogg_path)
 
-        # ogg to wav 변환 (ffmpeg 필요)
+        # ogg to wav 변환 (ffmpeg 필요) - 개선된 설정
         try:
             import subprocess
-            subprocess.run(["ffmpeg", "-y", "-i", ogg_path, "-ar", "16000", wav_path],
-                          check=True, capture_output=True)
+            proc = subprocess.run(
+                ["ffmpeg", "-y", "-i", ogg_path, "-ar", "16000", "-ac", "1", wav_path],
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
+            )
+            if proc.returncode != 0:
+                logger.error(f"ffmpeg stderr: {proc.stderr[:500]}")
+                await reply_text(update, f"오디오 변환 실패: ffmpeg가 제대로 설치되지 않았거나 권한이 없습니다.")
+                return
         except Exception as e:
-            await reply_text(update, f"오디오 변환 실패: {e}. ffmpeg가 설치되어 있는지 확인하세요.")
+            await reply_text(update, f"오디오 변환 실패: {str(e)[:100]}. ffmpeg가 설치되어 있는지 확인하세요.")
             return
 
-        # Whisper로 전사
+        # Whisper로 전사 (캐싱 적용)
         try:
             from faster_whisper import WhisperModel
-            # base 모델 사용 (빠르고 정확)
-            model = WhisperModel("base", device="cpu", compute_type="int8")
-            segments, info = model.transcribe(wav_path, language="ko")
-            transcription = " ".join([segment.text for segment in segments]).strip()
+            # 모델 캐싱으로 속도 향상
+            if not hasattr(handle_voice, "_whisper"):
+                handle_voice._whisper = WhisperModel("base", device="cpu", compute_type="int8")
+            model = handle_voice._whisper
+
+            segments, info = model.transcribe(wav_path, language="ko", vad_filter=True)
+            transcription = " ".join([s.text.strip() for s in segments]).strip()
 
             if not transcription:
                 await reply_text(update, "음성에서 텍스트를 인식하지 못했어요. 다시 시도해주세요.")
@@ -492,10 +534,8 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 if not answer:
                     answer = "처리 실패"
 
-                # 마크다운 제거
-                answer = answer.replace('|', ' ').replace('**', '').replace('\\n', ' ').replace('\n', ' ')
-                if len(answer) > 500:
-                    answer = answer[:500] + "..."
+                # 텔레그램용 포맷팅 적용
+                answer = format_plain(answer)
 
             await reply_text(update, f"🎤 **전사된 텍스트:**\n{transcription}\n\n📝 **처리 결과:**\n{answer}")
         except ImportError:
