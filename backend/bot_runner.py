@@ -591,6 +591,199 @@ async def handle_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await reply_text(update, "최근 문서 목록:\n" + "\n".join(lines))
 
 
+# ========== Google Drive Sync Handlers ==========
+
+async def handle_drive(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle /drive command - show Google Drive sync help"""
+    help_text = (
+        "📁 **Google Drive 동기화 가이드**\n\n"
+        "**사용 가능한 명령어:**\n"
+        "• `/drive` - 이 도움말 보기\n"
+        "• `/drivelist` - 드라이브 파일 목록 보기\n"
+        "• `/driveget <file_id>` - 드라이브에서 파일 가져오기\n"
+        "• `/drivesync` - 새로 올라온 파일 확인\n\n"
+        "**자동 동기화:**\n"
+        "✓ 텔레그램 파일 자동 드라이브 저장\n"
+        "✓ 드라이브 새 파일 텔레그램 알림\n\n"
+        "**예시:**\n"
+        "1. `/drivelist` - 전체 파일 목록 보기\n"
+        "2. `/driveget 1A2B3C4D` - ID가 1A2B3C4D인 파일 다운로드\n"
+        "3. `/drivesync` - 새 파일 체크\n"
+        "4. 파일 전송 → 자동 드라이브 저장\n"
+    )
+    await reply_text(update, help_text)
+
+
+async def handle_drive_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle /drivelist command - list all files in Google Drive"""
+    progress_messages = []
+    progress_messages.append(await update.message.reply_text("📁 드라이브 파일 목록 조회 중... [0%]"))
+
+    try:
+        from backend.services.drive_sync import get_folder_files, format_file_list
+
+        progress_messages.append(await update.message.reply_text("📂 드라이브 연결 중... [30%]"))
+
+        files = get_folder_files()
+
+        progress_messages.append(await update.message.reply_text("📋 파일 목록 생성 중... [70%]"))
+
+        result = format_file_list(files)
+
+        progress_messages.append(await update.message.reply_text("✅ 조회 완료! [100%]"))
+
+        await reply_text(update, result)
+
+    except Exception as e:
+        logger.error(f"Drive list error: {e}")
+        await reply_text(update, f"드라이브 목록 조회 중 오류가 발생했어요: {str(e)[:100]}")
+
+
+async def handle_drive_get(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle /driveget command - download a file from Google Drive"""
+    args = context.args
+    if not args:
+        await reply_text(update, "사용법: `/driveget <file_id>`\n\n예: `/driveget 1A2B3C4D`")
+        return
+
+    file_id = args[0]
+
+    progress_messages = []
+    progress_messages.append(await update.message.reply_text(f"📥 드라이브에서 파일 다운로드 중... [0%]"))
+
+    try:
+        from backend.services.drive_sync import get_file_info, download_file
+
+        progress_messages.append(await update.message.reply_text("📂 파일 정보 조회 중... [30%]"))
+
+        file_info = get_file_info(file_id)
+
+        if not file_info:
+            progress_messages.append(await update.message.reply_text("❌ 파일을 찾을 수 없습니다 [100%]"))
+            await reply_text(update, "❌ 파일을 찾을 수 없어요. File ID를 확인해주세요.")
+            return
+
+        file_name = file_info['name']
+        progress_messages.append(await update.message.reply_text(f"📄 {file_name} 다운로드 중... [60%]"))
+
+        # Download file
+        tmp_path = os.path.join(tempfile.gettempdir(), f"drive_download_{file_id}_{file_name}")
+        success = download_file(file_id, tmp_path)
+
+        if not success:
+            progress_messages.append(await update.message.reply_text("❌ 다운로드 실패 [100%]"))
+            await reply_text(update, "❌ 파일 다운로드에 실패했어요.")
+            return
+
+        progress_messages.append(await update.message.reply_text("✅ 다운로드 완료! [100%]"))
+
+        # Send file to Telegram
+        with open(tmp_path, 'rb') as f:
+            from telegram import InputFile
+            await context.bot.send_document(
+                chat_id=update.effective_chat.id,
+                document=InputFile(f, filename=file_name),
+                caption=f"📄 **드라이브에서 가져온 파일**: {file_name}"
+            )
+
+        # Clean up
+        try:
+            os.remove(tmp_path)
+        except Exception:
+            pass
+
+    except Exception as e:
+        logger.error(f"Drive get error: {e}")
+        await reply_text(update, f"파일 다운로드 중 오류가 발생했어요: {str(e)[:100]}")
+
+
+async def handle_drive_sync(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle /drivesync command - check for new files in Google Drive"""
+    progress_messages = []
+    progress_messages.append(await update.message.reply_text("🔍 드라이브 새 파일 확인 중... [0%]"))
+
+    try:
+        from backend.services.drive_sync import check_new_files
+
+        progress_messages.append(await update.message.reply_text("📂 드라이브 스캔 중... [50%]"))
+
+        new_files = check_new_files()
+
+        progress_messages.append(await update.message.reply_text("✅ 확인 완료! [100%]"))
+
+        if not new_files:
+            await reply_text(update, "📭 새 파일이 없습니다.")
+            return
+
+        # Format new files list
+        lines = [f"🆕 **새로 올라온 파일** ({len(new_files)}개):\n"]
+        for i, file in enumerate(new_files, 1):
+            file_type = "📁 폴더" if file.get('mimeType') == 'application/vnd.google-apps.folder' else "📄 파일"
+            lines.append(f"{i}. {file_type}: **{file['name']}**")
+            lines.append(f"   ID: `{file['id']}`")
+
+        await reply_text(update, "\n".join(lines))
+
+    except Exception as e:
+        logger.error(f"Drive sync error: {e}")
+        await reply_text(update, f"새 파일 확인 중 오류가 발생했어요: {str(e)[:100]}")
+
+
+async def handle_document_auto_save(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Auto-save all documents to Google Drive"""
+    doc = update.message.document
+    if not doc:
+        return
+
+    progress_messages = []
+    progress_messages.append(await update.message.reply_text(f"📁 {doc.file_name} Google Drive 자동 저장 중... [0%]"))
+
+    file = await context.bot.get_file(doc.file_id)
+    tmp = os.path.join(tempfile.gettempdir(), f"{doc.file_id}_{doc.file_name}")
+
+    doc_indicator = ActionIndicator(context, update.effective_chat.id, ChatAction.UPLOAD_DOCUMENT)
+    await doc_indicator.__aenter__()
+    await file.download_to_drive(tmp)
+
+    progress_messages.append(await update.message.reply_text("📁 파일 다운로드 완료. 드라이브 저장 중... [30%]"))
+
+    try:
+        from backend.services.drive_sync import upload_file
+
+        # Upload to Google Drive
+        result = upload_file(tmp)
+
+        if result:
+            progress_messages.append(await update.message.reply_text("✅ Google Drive 저장 완료! [100%]"))
+
+            file_id = result.get('id', 'N/A')
+            web_link = result.get('webViewLink', '')
+
+            # Send confirmation
+            confirm_text = (
+                f"✅ **{doc.file_name}** Google Drive에 자동 저장되었습니다!\n\n"
+                f"📋 파일 ID: `{file_id}`"
+            )
+            if web_link:
+                confirm_text += f"\n🔗 [드라이브에서 보기]({web_link})"
+
+            await reply_text(update, confirm_text)
+
+        else:
+            progress_messages.append(await update.message.reply_text("❌ 드라이브 저장 실패 [100%]"))
+            await reply_text(update, "❌ Google Drive 저장에 실패했어요. 권한을 확인해주세요.")
+
+    except Exception as e:
+        logger.error(f"Auto-save error: {e}")
+        await reply_text(update, f"자동 저장 중 오류가 발생했어요: {str(e)[:100]}")
+    finally:
+        try:
+            os.remove(tmp)
+        except Exception:
+            pass
+        await doc_indicator.__aexit__(None, None, None)
+
+
 async def handle_drive(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle /drive command - show Google Drive help and options"""
     help_text = (
@@ -658,56 +851,107 @@ async def handle_drive_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     except Exception as e:
         logger.error(f"Drive list error: {e}")
-        progress_messages.append(await update.message.reply_text(f"❌ 오류: {str(e)[:100]}"))
         await reply_text(update, f"드라이브 목록 조회 중 오류가 발생했어요: {str(e)[:100]}")
 
 
-async def handle_drive_folder(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle /drivefolder command - create a folder in Google Drive"""
+async def handle_drive_get(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle /driveget command - download a file from Google Drive"""
     args = context.args
     if not args:
-        await reply_text(update, "사용법: /drivefolder <폴더명>\n\n예: /drivefolder 보고서")
+        await reply_text(update, "사용법: `/driveget <file_id>`\n\n예: `/driveget 1A2B3C4D`")
         return
 
-    folder_name = " ".join(args)
+    file_id = args[0]
 
     progress_messages = []
-    progress_messages.append(await update.message.reply_text(f"📁 '{folder_name}' 폴더 생성 중... [0%]"))
+    progress_messages.append(await update.message.reply_text(f"📥 드라이브에서 파일 다운로드 중... [0%]"))
 
     try:
-        from backend.services.google_drive import create_folder
+        from backend.services.drive_sync import get_file_info, download_file
 
-        progress_messages.append(await update.message.reply_text(f"📂 드라이브에 폴더 생성 중... [50%]"))
+        progress_messages.append(await update.message.reply_text("📂 파일 정보 조회 중... [30%]"))
 
-        folder_id = create_folder(folder_name)
+        file_info = get_file_info(file_id)
 
-        if folder_id:
-            progress_messages.append(await update.message.reply_text("✅ 폴더 생성 완료! [100%]"))
-            await reply_text(update, f"✅ **{folder_name}** 폴더가 성공적으로 생성되었습니다!\n\n📋 폴더 ID: `{folder_id}`")
-        else:
-            progress_messages.append(await update.message.reply_text("❌ 폴더 생성 실패 [100%]"))
-            await reply_text(update, f"❌ '{folder_name}' 폴더 생성에 실패했어요. 권한을 확인해주세요.")
+        if not file_info:
+            progress_messages.append(await update.message.reply_text("❌ 파일을 찾을 수 없습니다 [100%]"))
+            await reply_text(update, "❌ 파일을 찾을 수 없어요. File ID를 확인해주세요.")
+            return
+
+        file_name = file_info['name']
+        progress_messages.append(await update.message.reply_text(f"📄 {file_name} 다운로드 중... [60%]"))
+
+        # Download file
+        tmp_path = os.path.join(tempfile.gettempdir(), f"drive_download_{file_id}_{file_name}")
+        success = download_file(file_id, tmp_path)
+
+        if not success:
+            progress_messages.append(await update.message.reply_text("❌ 다운로드 실패 [100%]"))
+            await reply_text(update, "❌ 파일 다운로드에 실패했어요.")
+            return
+
+        progress_messages.append(await update.message.reply_text("✅ 다운로드 완료! [100%]"))
+
+        # Send file to Telegram
+        with open(tmp_path, 'rb') as f:
+            from telegram import InputFile
+            await context.bot.send_document(
+                chat_id=update.effective_chat.id,
+                document=InputFile(f, filename=file_name),
+                caption=f"📄 **드라이브에서 가져온 파일**: {file_name}"
+            )
+
+        # Clean up
+        try:
+            os.remove(tmp_path)
+        except Exception:
+            pass
 
     except Exception as e:
-        logger.error(f"Drive folder creation error: {e}")
-        progress_messages.append(await update.message.reply_text(f"❌ 오류: {str(e)[:100]}"))
-        await reply_text(update, f"폴더 생성 중 오류가 발생했어요: {str(e)[:100]}")
+        logger.error(f"Drive get error: {e}")
+        await reply_text(update, f"파일 다운로드 중 오류가 발생했어요: {str(e)[:100]}")
 
 
-async def handle_document_gdrive(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle document upload to Google Drive when user sends '/gdrive'"""
+async def handle_drive_sync(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle /drivesync command - check for new files in Google Drive"""
+    progress_messages = []
+    progress_messages.append(await update.message.reply_text("🔍 드라이브 새 파일 확인 중... [0%]"))
+
+    try:
+        from backend.services.drive_sync import check_new_files
+
+        progress_messages.append(await update.message.reply_text("📂 드라이브 스캔 중... [50%]"))
+
+        new_files = check_new_files()
+
+        progress_messages.append(await update.message.reply_text("✅ 확인 완료! [100%]"))
+
+        if not new_files:
+            await reply_text(update, "📭 새 파일이 없습니다.")
+            return
+
+        # Format new files list
+        lines = [f"🆕 **새로 올라온 파일** ({len(new_files)}개):\n"]
+        for i, file in enumerate(new_files, 1):
+            file_type = "📁 폴더" if file.get('mimeType') == 'application/vnd.google-apps.folder' else "📄 파일"
+            lines.append(f"{i}. {file_type}: **{file['name']}**")
+            lines.append(f"   ID: `{file['id']}`")
+
+        await reply_text(update, "\n".join(lines))
+
+    except Exception as e:
+        logger.error(f"Drive sync error: {e}")
+        await reply_text(update, f"새 파일 확인 중 오류가 발생했어요: {str(e)[:100]}")
+
+
+async def handle_document_auto_save(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Auto-save all documents to Google Drive"""
     doc = update.message.document
     if not doc:
         return
 
-    # Check if message contains '/gdrive' flag
-    if '/gdrive' not in (update.message.caption or '').lower():
-        # Not a gdrive upload, use regular document handler
-        await handle_document(update, context)
-        return
-
     progress_messages = []
-    progress_messages.append(await update.message.reply_text("📁 Google Drive 업로드 중... [0%]"))
+    progress_messages.append(await update.message.reply_text(f"📁 {doc.file_name} Google Drive 자동 저장 중... [0%]"))
 
     file = await context.bot.get_file(doc.file_id)
     tmp = os.path.join(tempfile.gettempdir(), f"{doc.file_id}_{doc.file_name}")
@@ -716,61 +960,37 @@ async def handle_document_gdrive(update: Update, context: ContextTypes.DEFAULT_T
     await doc_indicator.__aenter__()
     await file.download_to_drive(tmp)
 
-    progress_messages.append(await update.message.reply_text(f"📁 파일 다운로드 완료. Google Drive 업로드 중... [30%]"))
+    progress_messages.append(await update.message.reply_text("📁 파일 다운로드 완료. 드라이브 저장 중... [30%]"))
 
     try:
-        from backend.services.google_drive import upload_file
+        from backend.services.drive_sync import upload_file
 
         # Upload to Google Drive
         result = upload_file(tmp)
 
         if result:
-            progress_messages.append(await update.message.reply_text("✅ Google Drive 업로드 완료! [100%]"))
+            progress_messages.append(await update.message.reply_text("✅ Google Drive 저장 완료! [100%]"))
 
-            web_view_link = result.get('webViewLink', 'N/A')
             file_id = result.get('id', 'N/A')
+            web_link = result.get('webViewLink', '')
 
-            final_text = (
-                f"✅ **{doc.file_name}** Google Drive 업로드 완료!\n\n"
-                f"📋 파일 ID: `{file_id}`\n"
-                f"🔗 [Google Drive에서 보기]({web_view_link})"
+            # Send confirmation
+            confirm_text = (
+                f"✅ **{doc.file_name}** Google Drive에 자동 저장되었습니다!\n\n"
+                f"📋 파일 ID: `{file_id}`"
             )
-            await reply_text(update, final_text)
+            if web_link:
+                confirm_text += f"\n🔗 [드라이브에서 보기]({web_link})"
 
-            # Also analyze the document with Gemini
-            try:
-                progress_messages.append(await update.message.reply_text("🧠 Gemini 문서 분석 중... [70%]"))
-
-                content = open(tmp, 'rb').read()
-                import chardet
-                enc = chardet.detect(content).get('encoding') or 'utf-8'
-                text = content.decode(enc, errors='ignore')
-
-                prompt = f"다음 문서를 요약/분석해줘. 파일명: {doc.file_name}\n\n{text}"
-                prompt += "\n\n항상 한국어로만 답변하고, Markdown 표/코드블록 없이 간결한 문장으로 답하세요."
-
-                def _call_gemini_doc():
-                    resp = gemini_model.generate_content(prompt)
-                    return resp.text.strip()
-
-                answer = await asyncio.to_thread(_call_gemini_doc)
-                answer = format_plain(answer)
-
-                analysis_text = f"\n\n📄 **문서 분석 결과**:\n\n{answer}"
-                await reply_text(update, analysis_text)
-
-            except Exception as e:
-                logger.error(f"Document analysis error: {e}")
-                # Don't fail the upload if analysis fails
+            await reply_text(update, confirm_text)
 
         else:
-            progress_messages.append(await update.message.reply_text("❌ Google Drive 업로드 실패 [100%]"))
-            await reply_text(update, "❌ Google Drive 업로드에 실패했어요. 권한을 확인해주세요.")
+            progress_messages.append(await update.message.reply_text("❌ 드라이브 저장 실패 [100%]"))
+            await reply_text(update, "❌ Google Drive 저장에 실패했어요. 권한을 확인해주세요.")
 
     except Exception as e:
-        logger.error(f"Google Drive upload error: {e}")
-        progress_messages.append(await update.message.reply_text(f"❌ 오류: {str(e)[:100]}"))
-        await reply_text(update, f"Google Drive 업로드 중 오류가 발생했어요: {str(e)[:100]}")
+        logger.error(f"Auto-save error: {e}")
+        await reply_text(update, f"자동 저장 중 오류가 발생했어요: {str(e)[:100]}")
     finally:
         try:
             os.remove(tmp)
@@ -780,7 +1000,7 @@ async def handle_document_gdrive(update: Update, context: ContextTypes.DEFAULT_T
 
 
 def main():
-    print("=== 125 Unified Telegram Bot (Gemini 2.5 Flash) ===")
+    print("=== 125 Unified Telegram Bot (Gemini 2.5 Flash + Drive Sync) ===")
     print(f"TELEGRAM_BOT_TOKEN: {'Set' if TELEGRAM_BOT_TOKEN else 'Not Found'}")
     print(f"GEMINI_API_KEY: {'Set' if GEMINI_API_KEY else 'Not Found'}")
     print(f"Supabase: {'Set' if (SUPABASE_URL and SUPABASE_KEY) else 'Not Set'}")
@@ -796,9 +1016,10 @@ def main():
     app.add_handler(CommandHandler("list", handle_list))
     app.add_handler(CommandHandler("drive", handle_drive))
     app.add_handler(CommandHandler("drivelist", handle_drive_list))
-    app.add_handler(CommandHandler("drivefolder", handle_drive_folder))
+    app.add_handler(CommandHandler("driveget", handle_drive_get))
+    app.add_handler(CommandHandler("drivesync", handle_drive_sync))
 
-    app.add_handler(MessageHandler(filters.Document.ALL, handle_document_gdrive))
+    app.add_handler(MessageHandler(filters.Document.ALL, handle_document_auto_save))
     app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
     app.add_handler(MessageHandler(filters.VOICE, handle_voice))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
