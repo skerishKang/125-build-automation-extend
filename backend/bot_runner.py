@@ -18,6 +18,8 @@ load_dotenv(os.path.join(os.path.dirname(__file__), ".env"))
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+MINIMAX_API_TOKEN = os.getenv("MINIMAX_API_TOKEN")
+MINIMAX_BASE_URL = os.getenv("MINIMAX_BASE_URL", "https://api.minimax.io/anthropic")
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_ANON_KEY")
 
@@ -41,13 +43,18 @@ except ImportError:
     logger.error("python-telegram-bot이 설치되지 않았습니다. pip install python-telegram-bot==21.6")
     sys.exit(1)
 
-# gemini
-import google.generativeai as genai
-if not GEMINI_API_KEY:
-    logger.warning("GEMINI_API_KEY not set; chat will be disabled")
+# minimax
+text_model = None
+if MINIMAX_API_TOKEN:
+    try:
+        import httpx
+        import json
+        text_model = "minimax"  # Use 'minimax' flag to indicate MiniMax API
+        logger.info("Using MiniMax API (MiniMax-M2)")
+    except Exception as e:
+        logger.error(f"MiniMax setup failed: {e}")
 else:
-    genai.configure(api_key=GEMINI_API_KEY)
-    text_model = genai.GenerativeModel("gemini-pro")
+    logger.warning("MINIMAX_API_TOKEN not set; chat will be disabled")
 
 # supabase (optional memory)
 supabase = None
@@ -115,8 +122,8 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not text or text.startswith('/'):
         return
 
-    if not GEMINI_API_KEY:
-        await reply_text(update, "Gemini 설정이 없어 대화가 비활성화되어 있어요.")
+    if not MINIMAX_API_TOKEN:
+        await reply_text(update, "MiniMax 설정이 없어 대화가 비활성화되어 있어요.")
         return
 
     user_id = str(update.effective_user.id)
@@ -134,10 +141,38 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     prompt = "\n".join(context_lines + [f"현재 사용자 메시지: {text}"])
 
     try:
-        resp = text_model.generate_content(prompt)
-        answer = resp.text or "(응답이 비어있어요)"
+        # MiniMax API 호출 (Anthropic 호환)
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            headers = {
+                "x-api-key": MINIMAX_API_TOKEN,
+                "content-type": "application/json"
+            }
+            data = {
+                "model": "minimax-m2",
+                "max_tokens": 2048,
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": prompt
+                    }
+                ]
+            }
+            response = await client.post(
+                f"{MINIMAX_BASE_URL}/v1/messages",
+                headers=headers,
+                json=data
+            )
+            response.raise_for_status()
+            result = response.json()
+            logger.info(f"MiniMax response: {result}")  # 디버깅용 로깅
+            # Anthropic 호환 응답 형식
+            content = result.get("content", [])
+            if content and isinstance(content, list):
+                answer = content[0].get("text", "(응답이 비어있어요)")
+            else:
+                answer = str(result)  # 전체 응답을 문자열로
     except Exception as e:
-        logger.error(f"Gemini error: {e}")
+        logger.error(f"MiniMax error: {e}")
         answer = "죄송해요, 지금은 답변을 생성할 수 없어요."
 
     await reply_text(update, answer)
@@ -167,19 +202,41 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception:
             pass
 
-    if not GEMINI_API_KEY:
-        await reply_text(update, "Gemini 설정이 없어 파일 분석이 비활성화되어 있어요.")
+    if not MINIMAX_API_TOKEN:
+        await reply_text(update, "MiniMax 설정이 없어 파일 분석이 비활성화되어 있어요.")
         return
 
     user_id = str(update.effective_user.id)
     username = update.effective_user.first_name or "사용자"
 
     try:
-        prompt = f"다음 문서를 요약/분석해줘. 파일명: {doc.file_name}\n\n{text}"
-        resp = text_model.generate_content(prompt)
-        answer = resp.text or "(응답이 비어있어요)"
+        # MiniMax API 호출 (Anthropic 호환)
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            headers = {
+                "x-api-key": MINIMAX_API_TOKEN,
+                "content-type": "application/json"
+            }
+            prompt = f"다음 문서를 요약/분석해줘. 파일명: {doc.file_name}\n\n{text}"
+            data = {
+                "model": "minimax-m2",
+                "max_tokens": 2048,
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": prompt
+                    }
+                ]
+            }
+            response = await client.post(
+                f"{MINIMAX_BASE_URL}/v1/messages",
+                headers=headers,
+                json=data
+            )
+            response.raise_for_status()
+            result = response.json()
+            answer = result.get("content", [{}])[0].get("text", "(응답이 비어있어요)")
     except Exception as e:
-        logger.error(f"Gemini doc error: {e}")
+        logger.error(f"MiniMax doc error: {e}")
         answer = "문서 분석 중 오류가 발생했어요."
 
     await reply_text(update, f"📄 {doc.file_name} 분석 결과:\n\n{answer}")
@@ -192,16 +249,38 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not GEMINI_API_KEY:
-        await reply_text(update, "Gemini 설정이 없어 이미지 분석이 비활성화되어 있어요.")
+    if not MINIMAX_API_TOKEN:
+        await reply_text(update, "MiniMax 설정이 없어 이미지 분석이 비활성화되어 있어요.")
         return
     try:
         photo = update.message.photo[-1]
         file = await context.bot.get_file(photo.file_id)
         tmp = os.path.join(tempfile.gettempdir(), f"{photo.file_id}.jpg")
         await file.download_to_drive(tmp)
-        # 간단: 이미지는 텍스트 모델로 설명 요청 (멀티모달 미사용 환경 대비)
-        answer = text_model.generate_content("이미지를 설명하는 캡션을 만들어줘. (이미지의 주요 내용, 톤, 색감, 맥락 추정)").text
+        # 이미지는 텍스트 요청 (멀티모달 미사용 환경)
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            headers = {
+                "x-api-key": MINIMAX_API_TOKEN,
+                "content-type": "application/json"
+            }
+            data = {
+                "model": "minimax-m2",
+                "max_tokens": 1024,
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": "이미지를 설명하는 캡션을 만들어줘. (이미지의 주요 내용, 톤, 색감, 맥락 추정)"
+                    }
+                ]
+            }
+            response = await client.post(
+                f"{MINIMAX_BASE_URL}/v1/messages",
+                headers=headers,
+                json=data
+            )
+            response.raise_for_status()
+            result = response.json()
+            answer = result.get("content", [{}])[0].get("text", "이미지 설명 생성 실패")
         await reply_text(update, f"🖼️ 이미지 설명:\n{answer}")
     except Exception as e:
         logger.error(f"photo error: {e}")
@@ -209,16 +288,81 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not GEMINI_API_KEY:
-        await reply_text(update, "Gemini 설정이 없어 음성 처리가 비활성화되어 있어요.")
+    if not MINIMAX_API_TOKEN:
+        await reply_text(update, "MiniMax 설정이 없어 음성 처리가 비활성화되어 있어요.")
         return
     try:
         voice = update.message.voice
         file = await context.bot.get_file(voice.file_id)
-        tmp = os.path.join(tempfile.gettempdir(), f"{voice.file_id}.ogg")
-        await file.download_to_drive(tmp)
-        # 간단: 실제 STT는 구현 환경에 따라 추가. 여기서는 안내만.
-        await reply_text(update, "음성 메시지를 받았어요. 현재는 텍스트 전환(STT)이 설정되지 않았어요.")
+        ogg_path = os.path.join(tempfile.gettempdir(), f"{voice.file_id}.ogg")
+        wav_path = os.path.join(tempfile.gettempdir(), f"{voice.file_id}.wav")
+        await file.download_to_drive(ogg_path)
+
+        # ogg to wav 변환 (ffmpeg 필요)
+        try:
+            import subprocess
+            subprocess.run(["ffmpeg", "-y", "-i", ogg_path, "-ar", "16000", wav_path],
+                          check=True, capture_output=True)
+        except Exception as e:
+            await reply_text(update, f"오디오 변환 실패: {e}. ffmpeg가 설치되어 있는지 확인하세요.")
+            return
+
+        # Whisper로 전사
+        try:
+            from faster_whisper import WhisperModel
+            # base 모델 사용 (빠르고 정확)
+            model = WhisperModel("base", device="cpu", compute_type="int8")
+            segments, info = model.transcribe(wav_path, language="ko")
+            transcription = " ".join([segment.text for segment in segments]).strip()
+
+            if not transcription:
+                await reply_text(update, "음성에서 텍스트를 인식하지 못했어요. 다시 시도해주세요.")
+                return
+
+            # MiniMax로 요약/답변 생성
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                headers = {
+                    "x-api-key": MINIMAX_API_TOKEN,
+                    "content-type": "application/json"
+                }
+                prompt = f"다음 음성 메시지가 전사된 텍스트입니다. 적절히 요약하거나 답변해 주세요:\n\n{transcription}"
+                data = {
+                    "model": "minimax-m2",
+                    "max_tokens": 1024,
+                    "messages": [
+                        {
+                            "role": "user",
+                            "content": prompt
+                        }
+                    ]
+                }
+                response = await client.post(
+                    f"{MINIMAX_BASE_URL}/v1/messages",
+                    headers=headers,
+                    json=data
+                )
+                response.raise_for_status()
+                result = response.json()
+                content = result.get("content", [])
+                if content and isinstance(content, list):
+                    answer = content[0].get("text", "처리 실패")
+                else:
+                    answer = "처리 실패"
+
+            await reply_text(update, f"🎤 **전사된 텍스트:**\n{transcription}\n\n📝 **처리 결과:**\n{answer}")
+        except ImportError:
+            await reply_text(update, "faster-whisper가 설치되어 있지 않아요. `pip install faster-whisper`로 설치해주세요.")
+        except Exception as e:
+            logger.error(f"Whisper error: {e}")
+            await reply_text(update, f"음성 전사 중 오류가 발생했어요: {str(e)[:100]}")
+        finally:
+            # 임시 파일 삭제
+            try:
+                os.remove(ogg_path)
+                os.remove(wav_path)
+            except Exception:
+                pass
+
     except Exception as e:
         logger.error(f"voice error: {e}")
         await reply_text(update, "음성 처리에 실패했어요.")

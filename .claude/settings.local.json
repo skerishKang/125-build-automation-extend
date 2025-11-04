@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(cat backend/.env)",
+      "mcp__perplexity__search"
+    ],
+    "deny": [],
+    "ask": []
+  }
+}
