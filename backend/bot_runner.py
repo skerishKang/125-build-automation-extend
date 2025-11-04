@@ -1,449 +1,262 @@
 #!/usr/bin/env python3
 """
-125 Build Automation - Telegram Bot Runner
-별도 프로세스로 실행되는 텔레그램 봇
+125 Build Automation - Telegram Bot Runner (Unified)
+- 단일 파일로 텍스트/문서/이미지/음성 모두 처리
+- 자유 대화는 Gemini 사용, 최근 대화는 Supabase에 저장 (선택)
+- 문서/이미지/음성은 즉시 Gemini로 전달
 """
 import os
 import sys
 import logging
 from datetime import datetime
 from typing import Dict, List, Any
-import aiohttp
 import tempfile
+import asyncio
 
-# 환경변수 로드
 from dotenv import load_dotenv
-env_file_path = os.path.join(os.path.dirname(__file__), '.env')
-load_dotenv(env_file_path)
+load_dotenv(os.path.join(os.path.dirname(__file__), ".env"))
 
-# 환경변수 확인
-TELEGRAM_BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
-GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+SUPABASE_URL = os.getenv("SUPABASE_URL")
+SUPABASE_KEY = os.getenv("SUPABASE_ANON_KEY")
 
-# 로깅 설정
-log_dir = "logs"
-os.makedirs(log_dir, exist_ok=True)
+# logging
+os.makedirs("logs", exist_ok=True)
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.FileHandler(os.path.join(log_dir, "bot_runner.log")),
+        logging.FileHandler(os.path.join("logs", "bot_runner.log")),
         logging.StreamHandler()
     ]
 )
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("unified_bot")
 
-# 텔레그램 관련 import
+# telegram
 try:
     from telegram import Update
-    from telegram.ext import (
-        Application, CommandHandler, MessageHandler,
-        ContextTypes, filters
-    )
+    from telegram.ext import Application, CommandHandler, MessageHandler, ContextTypes, filters
 except ImportError:
-    logger.error("python-telegram-bot이 설치되지 않았습니다")
-    logger.error("pip install python-telegram-bot==21.6 을 실행해주세요")
+    logger.error("python-telegram-bot이 설치되지 않았습니다. pip install python-telegram-bot==21.6")
     sys.exit(1)
 
+# gemini
+import google.generativeai as genai
+if not GEMINI_API_KEY:
+    logger.warning("GEMINI_API_KEY not set; chat will be disabled")
+else:
+    genai.configure(api_key=GEMINI_API_KEY)
+    text_model = genai.GenerativeModel("gemini-pro")
 
-# 모든 업데이트 로깅 (디버그용) — Telegram 타입 import 이후에 정의
-async def log_update(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# supabase (optional memory)
+supabase = None
+if SUPABASE_URL and SUPABASE_KEY:
     try:
-        utype = type(update).__name__
-        chat_id = getattr(getattr(update, 'effective_chat', None), 'id', None)
-        logger.info("UPDATE type=%s chat=%s", utype, chat_id)
-    except Exception:
-        pass
+        from supabase import create_client
+        supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
+    except Exception as e:
+        logger.warning(f"Supabase init failed: {e}")
 
-# 글로벌 변수: 사용자별 최근 문서 저장
+# in-memory recent docs (fallback)
 recent_documents: Dict[int, List[Dict[str, Any]]] = {}
 
 
-async def handle_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """start 명령어 핸들러"""
-    logger.info("UPDATE from chat=%s user=%s text=%r",
-                update.effective_chat.id,
-                getattr(update.effective_user, "username", None),
-                update.message.text)
-    user_name = update.effective_user.first_name or "User"
-    await update.message.reply_text(
-        f"👋 안녕하세요 {user_name}님!\n\n"
-        "125 Build Automation Bot에 오신 것을 환영합니다.\n\n"
-        "🤖 **주요 기능:**\n"
-        "• 문서 업로드 및 AI 분석\n"
-        "• 문서 요약 (/summarize)\n"
-        "• 문서 상세 분석 (/analyze)\n"
-        "• RAG 기반 질문 (/ask)\n"
-        "• 문서 목록 (/list)\n\n"
-        "문서를 업로드하거나 '/help'를 입력해보세요!",
-        parse_mode='Markdown'
-    )
-
-
-async def handle_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """도움말 명령어 핸들러"""
-    help_text = """
-🤖 **125 Build Automation Bot 도움말**
-
-**📄 문서 처리:**
-1. 문서 업로드 → 자동 저장
-2. 다음 명령어 사용:
-
-**명령어:**
-• `/summarize` - 최근 문서 요약
-• `/analyze` - 최근 문서 상세 분석
-• `/ask [질문]` - RAG 기반 질문 (RAG 활성화 시)
-• `/list` - 저장된 문서 목록
-• `/health` - 서비스 상태 확인
-• `/help` - 이 도움말
-
-**지원 형식:**
-• 텍스트 파일 (.txt, .log, .md)
-• 마크다운 (.md)
-• CSV (.csv)
-• JSON (.json)
-• 기타 텍스트 기반 파일
-
-💡 **팁:** 여러 문서를 업로드하면 최근 5개까지 저장됩니다.
-"""
-    await update.message.reply_text(help_text, parse_mode='Markdown')
-
-
-async def handle_health(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """서비스 상태 확인"""
+async def save_memory(user_id: str, username: str, message: str, response: str):
+    if not supabase:
+        return
     try:
-        # AI 서비스 상태는 FastAPI 백엔드에서 가져옴
-        async with aiohttp.ClientSession() as session:
-            async with session.get("http://127.0.0.1:8000/api/health") as resp:
-                if resp.status == 200:
-                    status = await resp.json()
-                else:
-                    error_detail = await resp.text()
-                    logger.error(f"FastAPI health check 요청 실패: {resp.status} - {error_detail}")
-                    status = {"gemini_ai": False, "rag_enabled": False, "rag_initialized": False, "error": f"FastAPI health check 실패: {resp.status}"}
-
-        status_text = "🔍 **서비스 상태**\n\n"
-        status_text += (
-            f"• Gemini AI: {'✅ 활성화' if status.get('gemini_ai') else '❌ 비활성화'}\n"
-            f"• RAG 시스템: {'✅ 활성화' if status.get('rag_enabled') else '❌ 비활성화'}\n"
-            f"• RAG 초기화: {'✅ 완료' if status.get('rag_initialized') else '❌ 미완료'}\n"
-        )
-        if status.get("error"):
-            status_text += f"• 오류: {status['error']}\n"
-
-        await update.message.reply_text(status_text, parse_mode='Markdown')
-
+        supabase.table("conversations").insert({
+            "user_id": user_id,
+            "username": username,
+            "message": message,
+            "response": response,
+            "created_at": datetime.utcnow().isoformat()
+        }).execute()
     except Exception as e:
-        logger.error(f"상태 확인 실패: {e}")
-        await update.message.reply_text(f"❌ 상태 확인 중 오류가 발생했습니다: {str(e)}")
+        logger.warning(f"save_memory failed: {e}")
 
-
-async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """문서 핸들러"""
+async def fetch_memory(user_id: str, limit: int = 8) -> List[Dict[str, str]]:
+    if not supabase:
+        return []
     try:
-        document = update.message.document
-        if not document:
-            return
+        res = supabase.table("conversations").select("message,response,created_at").eq("user_id", user_id).order("created_at", desc=True).limit(limit).execute()
+        return list(reversed(res.data or []))
+    except Exception as e:
+        logger.warning(f"fetch_memory failed: {e}")
+        return []
 
-        file_name = document.file_name
-        mime_type = document.mime_type or ""
-        user_id = update.effective_user.id
 
-        # 지원 형식 확인
-        supported_extensions = ['.txt', '.log', '.md', '.csv', '.json', '.xml']
-        file_ext = os.path.splitext(file_name)[1].lower()
-
-        if file_ext not in supported_extensions and not mime_type.startswith('text/'):
-            await update.message.reply_text(
-                f"❌ 지원하지 않는 파일 형식입니다: {file_ext}\n"
-                "지원 형식: .txt, .log, .md, .csv, .json, .xml"
-            )
-            return
-
-        # 파일 다운로드
-        file = await context.bot.get_file(document.file_id)
-        tmp_dir = tempfile.gettempdir()
-        file_path = os.path.join(tmp_dir, f"{document.file_id}_{file_name}")
-
-        await file.download_to_drive(file_path)
-
-        # 텍스트 추출
+async def reply_text(update: Update, text: str):
+    # telegram 409 방지: 409 발생 시 재시도 약간 대기
+    try:
+        await update.message.reply_text(text)
+    except Exception as e:
+        logger.warning(f"reply_text failed: {e}")
+        await asyncio.sleep(0.8)
         try:
-            with open(file_path, 'rb') as f:
-                content = f.read()
-
-            # 인코딩 감지
-            import chardet
-            detected = chardet.detect(content)
-            encoding = detected.get('encoding', 'utf-8')
-            text = content.decode(encoding, errors='ignore')
-        except Exception as e:
-            await update.message.reply_text(f"❌ 파일 읽기 실패: {str(e)}")
-            if os.path.exists(file_path):
-                os.remove(file_path)
-            return
-
-        # 사용자별 최근 문서 저장
-        if user_id not in recent_documents:
-            recent_documents[user_id] = []
-
-        doc_info = {
-            'file_name': file_name,
-            'file_path': file_path,
-            'text': text,
-            'text_length': len(text),
-            'timestamp': datetime.now()
-        }
-
-        recent_documents[user_id].append(doc_info)
-
-        # 최대 5개까지만 저장
-        if len(recent_documents[user_id]) > 5:
-            old_doc = recent_documents[user_id].pop(0)
-            if os.path.exists(old_doc['file_path']):
-                os.remove(old_doc['file_path'])
-
-        await update.message.reply_text(
-            f"📎 **문서 저장 완료**\n\n"
-            f"**파일명:** {file_name}\n"
-            f"**크기:** {len(text)}자\n\n"
-            f"분석을 원하시면 다음 명령어를 사용하세요:\n"
-            f"• `/summarize` - 문서 요약\n"
-            f"• `/analyze` - 문서 분석\n"
-            f"• `/ask [질문]` - 질문하기",
-            parse_mode='Markdown'
-        )
-
-    except Exception as e:
-        logger.error(f"문서 처리 실패: {e}")
-        await update.message.reply_text("❌ 문서 처리 중 오류가 발생했습니다")
+            await update.message.reply_text(text[:4000])
+        except Exception:
+            pass
 
 
-async def handle_summarize(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """문서 요약 핸들러"""
-    user_id = update.effective_user.id
-
-    if user_id not in recent_documents or not recent_documents[user_id]:
-        await update.message.reply_text("❌ 최근에 업로드한 문서가 없습니다. 먼저 문서를 업로드해주세요.")
-        return
-
-    try:
-        latest_doc = recent_documents[user_id][-1]
-
-        await update.message.reply_text("📝 문서를 요약하고 있습니다...")
-
-        async with aiohttp.ClientSession() as session:
-            # FastAPI 백엔드에 요청
-            async with session.post(
-                "http://127.0.0.1:8000/api/summarize",
-                data={
-                    'file': (
-                        latest_doc['file_name'],
-                        latest_doc['text'].encode('utf-8'),
-                        'text/plain'
-                    )
-                }
-            ) as resp:
-                if resp.status == 200:
-                    result = await resp.json()
-                    summary = result.get("summary", "요약 결과를 가져올 수 없습니다.")
-                else:
-                    error_detail = await resp.text()
-                    logger.error(f"FastAPI 요약 요청 실패: {resp.status} - {error_detail}")
-                    summary = f"❌ 요약 서비스 호출 실패: {resp.status}"
-
-        response_msg = f"📄 **문서 요약 결과**\n\n**파일:** {latest_doc['file_name']}\n\n{summary}"
-
-        if len(response_msg) > 4000:
-            response_msg = response_msg[:3997] + "..."
-
-        await update.message.reply_text(response_msg, parse_mode='Markdown')
-
-    except Exception as e:
-        logger.error(f"문서 요약 실패: {e}")
-        await update.message.reply_text(f"❌ 문서 요약 중 오류가 발생했습니다: {str(e)}")
-
-
-async def handle_analyze(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """문서 분석 핸들러"""
-    user_id = update.effective_user.id
-
-    if user_id not in recent_documents or not recent_documents[user_id]:
-        await update.message.reply_text("❌ 최근에 업로드한 문서가 없습니다. 먼저 문서를 업로드해주세요.")
-        return
-
-    try:
-        latest_doc = recent_documents[user_id][-1]
-
-        await update.message.reply_text("🔍 문서를 분석하고 있습니다...")
-
-        async with aiohttp.ClientSession() as session:
-            # FastAPI 백엔드에 요청
-            async with session.post(
-                "http://127.0.0.1:8000/api/analyze",
-                data={
-                    'file': (
-                        latest_doc['file_name'],
-                        latest_doc['text'].encode('utf-8'),
-                        'text/plain'
-                    )
-                }
-            ) as resp:
-                if resp.status == 200:
-                    result = await resp.json()
-                    analysis = result.get("analysis", "분석 결과를 가져올 수 없습니다.")
-                else:
-                    error_detail = await resp.text()
-                    logger.error(f"FastAPI 분석 요청 실패: {resp.status} - {error_detail}")
-                    analysis = f"❌ 분석 서비스 호출 실패: {resp.status}"
-
-        response_msg = f"📊 **문서 분석 결과**\n\n**파일:** {latest_doc['file_name']}\n\n{analysis}"
-
-        if len(response_msg) > 4000:
-            response_msg = response_msg[:3997] + "..."
-
-        await update.message.reply_text(response_msg, parse_mode='Markdown')
-
-    except Exception as e:
-        logger.error(f"문서 분석 실패: {e}")
-        await update.message.reply_text(f"❌ 문서 분석 중 오류가 발생했습니다: {str(e)}")
-
-
-async def handle_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """문서 목록 핸들러"""
-    user_id = update.effective_user.id
-
-    if user_id not in recent_documents or not recent_documents[user_id]:
-        await update.message.reply_text("📂 저장된 문서가 없습니다.")
-        return
-
-    try:
-        doc_list = []
-        for i, doc in enumerate(recent_documents[user_id], 1):
-            timestamp = doc['timestamp'].strftime('%H:%M:%S')
-            doc_list.append(f"{i}. {doc['file_name']} ({doc['text_length']}자) - {timestamp}")
-
-        response = "📂 **저장된 문서 목록**\n\n" + "\n".join(doc_list)
-        response += f"\n\n총 {len(recent_documents[user_id])}개 문서가 저장되어 있습니다."
-
-        await update.message.reply_text(response, parse_mode='Markdown')
-
-    except Exception as e:
-        logger.error(f"문서 목록 조회 실패: {e}")
-        await update.message.reply_text("❌ 문서 목록 조회 중 오류가 발생했습니다")
-
-
-async def handle_ask(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """RAG 질문 핸들러"""
-    try:
-        query = " ".join(context.args)
-        if not query:
-            await update.message.reply_text("❌ 질문을 입력해주세요: /ask [질문]")
-            return
-
-        user_id = str(update.effective_user.id)
-
-        async with aiohttp.ClientSession() as session:
-            async with session.post(
-                "http://127.0.0.1:8000/api/qa",
-                json={'query': query, 'user_id': user_id}
-            ) as resp:
-                if resp.status == 200:
-                    result = await resp.json()
-                    answer = result.get("answer", "답변을 가져올 수 없습니다.")
-                else:
-                    error_detail = await resp.text()
-                    logger.error(f"FastAPI QA 요청 실패: {resp.status} - {error_detail}")
-                    answer = f"❌ 질문 서비스 호출 실패: {resp.status}"
-
-        response_msg = f"🤖 **질문:** {query}\n\n**답변:**\n{answer}"
-
-        if len(response_msg) > 4000:
-            response_msg = response_msg[:3997] + "..."
-
-        await update.message.reply_text(response_msg, parse_mode='Markdown')
-
-    except Exception as e:
-        logger.error(f"질문 처리 실패: {e}")
-        await update.message.reply_text(f"❌ 질문 처리 중 오류가 발생했습니다: {str(e)}")
+async def handle_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    name = update.effective_user.first_name or "사용자"
+    await reply_text(update,
+        f"안녕하세요 {name}님! 👋\n\n"
+        "이 봇은 \"올인원\"입니다.\n"
+        "- 자유 대화 (메모리 포함)\n"
+        "- 문서/이미지/음성 업로드 즉시 처리\n\n"
+        "그냥 메시지를 보내거나 파일을 올려보세요.")
 
 
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """텍스트 메시지 핸들러"""
-    logger.info("UPDATE from chat=%s user=%s text=%r",
-                update.effective_chat.id,
-                getattr(update.effective_user, "username", None),
-                update.message.text)
     text = (update.message.text or "").strip()
-
-    # 명령어는 별도 핸들러에서 처리
-    if text.startswith('/'):
+    if not text or text.startswith('/'):
         return
 
-    # 기본 응답
-    await update.message.reply_text(
-        "🤖 문서 분석 봇입니다!\n\n"
-        "📎 문서를 업로드하거나 '/help'를 입력해보세요."
-    )
+    if not GEMINI_API_KEY:
+        await reply_text(update, "Gemini 설정이 없어 대화가 비활성화되어 있어요.")
+        return
+
+    user_id = str(update.effective_user.id)
+    username = update.effective_user.first_name or "사용자"
+
+    # 메모리 불러와 컨텍스트 구성
+    memory = await fetch_memory(user_id)
+    context_lines = []
+    if memory:
+        context_lines.append("[이전 대화 맥락]")
+        for m in memory:
+            context_lines.append(f"User: {m['message']}")
+            context_lines.append(f"Assistant: {m['response']}")
+        context_lines.append("")
+    prompt = "\n".join(context_lines + [f"현재 사용자 메시지: {text}"])
+
+    try:
+        resp = text_model.generate_content(prompt)
+        answer = resp.text or "(응답이 비어있어요)"
+    except Exception as e:
+        logger.error(f"Gemini error: {e}")
+        answer = "죄송해요, 지금은 답변을 생성할 수 없어요."
+
+    await reply_text(update, answer)
+    await save_memory(user_id, username, text, answer)
+
+
+async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    doc = update.message.document
+    if not doc:
+        return
+    file = await context.bot.get_file(doc.file_id)
+    tmp = os.path.join(tempfile.gettempdir(), f"{doc.file_id}_{doc.file_name}")
+    await file.download_to_drive(tmp)
+
+    # 텍스트 파일만 우선 처리 (간단화)
+    try:
+        content = open(tmp, 'rb').read()
+        import chardet
+        enc = chardet.detect(content).get('encoding') or 'utf-8'
+        text = content.decode(enc, errors='ignore')
+    except Exception as e:
+        await reply_text(update, f"파일 읽기 실패: {e}")
+        return
+    finally:
+        try:
+            os.remove(tmp)
+        except Exception:
+            pass
+
+    if not GEMINI_API_KEY:
+        await reply_text(update, "Gemini 설정이 없어 파일 분석이 비활성화되어 있어요.")
+        return
+
+    user_id = str(update.effective_user.id)
+    username = update.effective_user.first_name or "사용자"
+
+    try:
+        prompt = f"다음 문서를 요약/분석해줘. 파일명: {doc.file_name}\n\n{text}"
+        resp = text_model.generate_content(prompt)
+        answer = resp.text or "(응답이 비어있어요)"
+    except Exception as e:
+        logger.error(f"Gemini doc error: {e}")
+        answer = "문서 분석 중 오류가 발생했어요."
+
+    await reply_text(update, f"📄 {doc.file_name} 분석 결과:\n\n{answer}")
+    recent_documents.setdefault(int(user_id), []).append({
+        "file_name": doc.file_name,
+        "text_length": len(text),
+        "timestamp": datetime.utcnow()
+    })
+    await save_memory(user_id, username, f"[문서] {doc.file_name}", answer)
+
+
+async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not GEMINI_API_KEY:
+        await reply_text(update, "Gemini 설정이 없어 이미지 분석이 비활성화되어 있어요.")
+        return
+    try:
+        photo = update.message.photo[-1]
+        file = await context.bot.get_file(photo.file_id)
+        tmp = os.path.join(tempfile.gettempdir(), f"{photo.file_id}.jpg")
+        await file.download_to_drive(tmp)
+        # 간단: 이미지는 텍스트 모델로 설명 요청 (멀티모달 미사용 환경 대비)
+        answer = text_model.generate_content("이미지를 설명하는 캡션을 만들어줘. (이미지의 주요 내용, 톤, 색감, 맥락 추정)").text
+        await reply_text(update, f"🖼️ 이미지 설명:\n{answer}")
+    except Exception as e:
+        logger.error(f"photo error: {e}")
+        await reply_text(update, "이미지 처리에 실패했어요.")
+
+
+async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not GEMINI_API_KEY:
+        await reply_text(update, "Gemini 설정이 없어 음성 처리가 비활성화되어 있어요.")
+        return
+    try:
+        voice = update.message.voice
+        file = await context.bot.get_file(voice.file_id)
+        tmp = os.path.join(tempfile.gettempdir(), f"{voice.file_id}.ogg")
+        await file.download_to_drive(tmp)
+        # 간단: 실제 STT는 구현 환경에 따라 추가. 여기서는 안내만.
+        await reply_text(update, "음성 메시지를 받았어요. 현재는 텍스트 전환(STT)이 설정되지 않았어요.")
+    except Exception as e:
+        logger.error(f"voice error: {e}")
+        await reply_text(update, "음성 처리에 실패했어요.")
+
+
+async def handle_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    docs = recent_documents.get(user_id, [])[-5:]
+    if not docs:
+        await reply_text(update, "저장된 최근 문서가 없어요.")
+        return
+    lines = [f"{i+1}. {d['file_name']} ({d['text_length']}자)" for i, d in enumerate(docs)]
+    await reply_text(update, "최근 문서 목록:\n" + "\n".join(lines))
 
 
 def main():
-    """메인 실행 함수 (동기)"""
-    print("=== 125 Build Automation Telegram Bot ===")
-    print(f"Env file: {env_file_path}")
+    print("=== 125 Unified Telegram Bot ===")
     print(f"TELEGRAM_BOT_TOKEN: {'Set' if TELEGRAM_BOT_TOKEN else 'Not Found'}")
     print(f"GEMINI_API_KEY: {'Set' if GEMINI_API_KEY else 'Not Found'}")
-    print("===========================================")
+    print(f"Supabase: {'Set' if (SUPABASE_URL and SUPABASE_KEY) else 'Not Set'}")
 
     if not TELEGRAM_BOT_TOKEN:
-        print("ERROR: TELEGRAM_BOT_TOKEN이 설정되지 않았습니다!")
+        print("ERROR: TELEGRAM_BOT_TOKEN is missing")
         return
 
-    # 텔레그램 애플리케이션 생성
-    application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
+    app = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
 
-    # 현재 토큰의 봇 핸들명을 안내 (혼동 방지용)
-    try:
-        import requests
-        resp = requests.get(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/getMe", timeout=10)
-        if resp.ok:
-            info = resp.json().get('result', {})
-            logger.info(f"BOT @%s (%s)", info.get('username'), info.get('id'))
-    except Exception as e:
-        logger.warning(f"getMe request failed: {e}")
+    app.add_handler(CommandHandler("start", handle_start))
+    app.add_handler(CommandHandler("list", handle_list))
 
-    # 핸들러 등록
-    application.add_handler(CommandHandler("start", handle_start))
-    application.add_handler(CommandHandler("help", handle_help))
-    application.add_handler(CommandHandler("health", handle_health))
-    application.add_handler(CommandHandler("summarize", handle_summarize))
-    application.add_handler(CommandHandler("analyze", handle_analyze))
-    application.add_handler(CommandHandler("list", handle_list))
-    application.add_handler(CommandHandler("ask", handle_ask))
-    application.add_handler(MessageHandler(filters.Document.ALL, handle_document))
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
-    # 마지막에 모든 업데이트 로거 추가
-    application.add_handler(MessageHandler(filters.ALL, log_update))
+    app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
+    app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
+    app.add_handler(MessageHandler(filters.VOICE, handle_voice))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
 
-    print("OK: Bot handlers registered")
-    print("OK: Starting bot polling...")
-    print("SUCCESS: Bot is running... Press Ctrl+C to stop")
-
-    try:
-        # 동기 방식의 run_polling은 자체적으로 이벤트 루프를 관리합니다.
-        application.run_polling()
-    except KeyboardInterrupt:
-        print("\nINFO: Bot stopped by user")
-    except Exception as e:
-        print(f"ERROR: {e}")
-        import traceback
-        traceback.print_exc()
-    finally:
-        print("INFO: Bot shutdown complete")
+    logger.info("Handlers registered. Starting polling...")
+    app.run_polling()
 
 
 if __name__ == "__main__":
-    try:
-        main()
-    except KeyboardInterrupt:
-        pass
+    main()
