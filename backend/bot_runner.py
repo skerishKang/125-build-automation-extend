@@ -169,10 +169,17 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             response.raise_for_status()
             result = response.json()
             logger.info(f"MiniMax response: {result}")  # 디버깅용 로깅
-            # Anthropic 호환 응답 형식
+            # MiniMax 응답 형식: content[0] = thinking, content[1] = actual answer
             content = result.get("content", [])
             if content and isinstance(content, list):
-                answer = content[0].get("text", "(응답이 비어있어요)")
+                # 찾기: 'text' 타입의 답변
+                for item in content:
+                    if item.get("type") == "text":
+                        answer = item.get("text", "(응답이 비어있어요)")
+                        break
+                else:
+                    # 'text' 타입이 없으면 첫 번째 항목
+                    answer = content[0].get("text", "(응답이 비어있어요)")
             else:
                 answer = str(result)  # 전체 응답을 문자열로
     except Exception as e:
