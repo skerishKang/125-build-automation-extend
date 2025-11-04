@@ -591,11 +591,200 @@ async def handle_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await reply_text(update, "최근 문서 목록:\n" + "\n".join(lines))
 
 
+async def handle_drive(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle /drive command - show Google Drive help and options"""
+    help_text = (
+        "📁 **Google Drive 연동 가이드**\n\n"
+        "**사용 가능한 명령어:**\n"
+        "• `/drive` - 이 도움말 보기\n"
+        "• `/drivelist` - 드라이브 파일 목록 보기\n"
+        "• `/drivefolder <폴더명>` - 새 폴더 생성\n\n"
+        "**파일 업로드:**\n"
+        "• 파일 전송 시 '/gdrive' 라고 입력하면 Google Drive에 업로드됩니다\n\n"
+        "**기능:**\n"
+        "✓ 드라이브 파일 목록 조회\n"
+        "✓ 파일/폴더 업로드\n"
+        "✓ Gemini로 드라이브 문서 분석\n"
+        "✓ 파일 공유 링크 생성\n\n"
+        "**예시:**\n"
+        "1. `/drivelist` - 루트 폴더의 파일 목록 보기\n"
+        "2. `/drivefolder 보고서` - '보고서' 폴더 생성\n"
+        "3. 파일 전송 + '/gdrive' 입력 → Google Drive 업로드\n"
+    )
+    await reply_text(update, help_text)
+
+
+async def handle_drive_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle /drivelist command - list files in Google Drive"""
+    progress_messages = []
+    progress_messages.append(await update.message.reply_text("📁 Google Drive 파일 목록 조회 중... [0%]"))
+
+    try:
+        from backend.services.google_drive import list_files
+
+        progress_messages.append(await update.message.reply_text("📂 드라이브 연결 중... [50%]"))
+
+        files = list_files(max_results=20)
+
+        if not files:
+            progress_messages.append(await update.message.reply_text("✅ 조회 완료! [100%]"))
+            await reply_text(update, "📁 드라이브에 파일이 없거나 권한이 없습니다.")
+            return
+
+        progress_messages.append(await update.message.reply_text("✅ 조회 완료! [100%]"))
+
+        # Format file list
+        file_lines = []
+        for i, file in enumerate(files, 1):
+            file_type = "📁 폴더" if file.get('mimeType') == 'application/vnd.google-apps.folder' else "📄 파일"
+            size = file.get('size', 'N/A')
+            if size != 'N/A':
+                # Convert bytes to KB or MB
+                size_int = int(size)
+                if size_int > 1024 * 1024:
+                    size = f"{size_int / (1024 * 1024):.1f}MB"
+                elif size_int > 1024:
+                    size = f"{size_int / 1024:.1f}KB"
+                else:
+                    size = f"{size_int}B"
+
+            file_lines.append(
+                f"{i}. {file_type}: {file['name']}\n"
+                f"   ID: {file['id']} | 크기: {size}"
+            )
+
+        result = f"📁 **Google Drive 파일 목록** (총 {len(files)}개):\n\n" + "\n\n".join(file_lines)
+        await reply_text(update, result)
+
+    except Exception as e:
+        logger.error(f"Drive list error: {e}")
+        progress_messages.append(await update.message.reply_text(f"❌ 오류: {str(e)[:100]}"))
+        await reply_text(update, f"드라이브 목록 조회 중 오류가 발생했어요: {str(e)[:100]}")
+
+
+async def handle_drive_folder(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle /drivefolder command - create a folder in Google Drive"""
+    args = context.args
+    if not args:
+        await reply_text(update, "사용법: /drivefolder <폴더명>\n\n예: /drivefolder 보고서")
+        return
+
+    folder_name = " ".join(args)
+
+    progress_messages = []
+    progress_messages.append(await update.message.reply_text(f"📁 '{folder_name}' 폴더 생성 중... [0%]"))
+
+    try:
+        from backend.services.google_drive import create_folder
+
+        progress_messages.append(await update.message.reply_text(f"📂 드라이브에 폴더 생성 중... [50%]"))
+
+        folder_id = create_folder(folder_name)
+
+        if folder_id:
+            progress_messages.append(await update.message.reply_text("✅ 폴더 생성 완료! [100%]"))
+            await reply_text(update, f"✅ **{folder_name}** 폴더가 성공적으로 생성되었습니다!\n\n📋 폴더 ID: `{folder_id}`")
+        else:
+            progress_messages.append(await update.message.reply_text("❌ 폴더 생성 실패 [100%]"))
+            await reply_text(update, f"❌ '{folder_name}' 폴더 생성에 실패했어요. 권한을 확인해주세요.")
+
+    except Exception as e:
+        logger.error(f"Drive folder creation error: {e}")
+        progress_messages.append(await update.message.reply_text(f"❌ 오류: {str(e)[:100]}"))
+        await reply_text(update, f"폴더 생성 중 오류가 발생했어요: {str(e)[:100]}")
+
+
+async def handle_document_gdrive(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle document upload to Google Drive when user sends '/gdrive'"""
+    doc = update.message.document
+    if not doc:
+        return
+
+    # Check if message contains '/gdrive' flag
+    if '/gdrive' not in (update.message.caption or '').lower():
+        # Not a gdrive upload, use regular document handler
+        await handle_document(update, context)
+        return
+
+    progress_messages = []
+    progress_messages.append(await update.message.reply_text("📁 Google Drive 업로드 중... [0%]"))
+
+    file = await context.bot.get_file(doc.file_id)
+    tmp = os.path.join(tempfile.gettempdir(), f"{doc.file_id}_{doc.file_name}")
+
+    doc_indicator = ActionIndicator(context, update.effective_chat.id, ChatAction.UPLOAD_DOCUMENT)
+    await doc_indicator.__aenter__()
+    await file.download_to_drive(tmp)
+
+    progress_messages.append(await update.message.reply_text(f"📁 파일 다운로드 완료. Google Drive 업로드 중... [30%]"))
+
+    try:
+        from backend.services.google_drive import upload_file
+
+        # Upload to Google Drive
+        result = upload_file(tmp)
+
+        if result:
+            progress_messages.append(await update.message.reply_text("✅ Google Drive 업로드 완료! [100%]"))
+
+            web_view_link = result.get('webViewLink', 'N/A')
+            file_id = result.get('id', 'N/A')
+
+            final_text = (
+                f"✅ **{doc.file_name}** Google Drive 업로드 완료!\n\n"
+                f"📋 파일 ID: `{file_id}`\n"
+                f"🔗 [Google Drive에서 보기]({web_view_link})"
+            )
+            await reply_text(update, final_text)
+
+            # Also analyze the document with Gemini
+            try:
+                progress_messages.append(await update.message.reply_text("🧠 Gemini 문서 분석 중... [70%]"))
+
+                content = open(tmp, 'rb').read()
+                import chardet
+                enc = chardet.detect(content).get('encoding') or 'utf-8'
+                text = content.decode(enc, errors='ignore')
+
+                prompt = f"다음 문서를 요약/분석해줘. 파일명: {doc.file_name}\n\n{text}"
+                prompt += "\n\n항상 한국어로만 답변하고, Markdown 표/코드블록 없이 간결한 문장으로 답하세요."
+
+                def _call_gemini_doc():
+                    resp = gemini_model.generate_content(prompt)
+                    return resp.text.strip()
+
+                answer = await asyncio.to_thread(_call_gemini_doc)
+                answer = format_plain(answer)
+
+                analysis_text = f"\n\n📄 **문서 분석 결과**:\n\n{answer}"
+                await reply_text(update, analysis_text)
+
+            except Exception as e:
+                logger.error(f"Document analysis error: {e}")
+                # Don't fail the upload if analysis fails
+
+        else:
+            progress_messages.append(await update.message.reply_text("❌ Google Drive 업로드 실패 [100%]"))
+            await reply_text(update, "❌ Google Drive 업로드에 실패했어요. 권한을 확인해주세요.")
+
+    except Exception as e:
+        logger.error(f"Google Drive upload error: {e}")
+        progress_messages.append(await update.message.reply_text(f"❌ 오류: {str(e)[:100]}"))
+        await reply_text(update, f"Google Drive 업로드 중 오류가 발생했어요: {str(e)[:100]}")
+    finally:
+        try:
+            os.remove(tmp)
+        except Exception:
+            pass
+        await doc_indicator.__aexit__(None, None, None)
+
+
 def main():
     print("=== 125 Unified Telegram Bot (Gemini 2.5 Flash) ===")
     print(f"TELEGRAM_BOT_TOKEN: {'Set' if TELEGRAM_BOT_TOKEN else 'Not Found'}")
     print(f"GEMINI_API_KEY: {'Set' if GEMINI_API_KEY else 'Not Found'}")
     print(f"Supabase: {'Set' if (SUPABASE_URL and SUPABASE_KEY) else 'Not Set'}")
+    print(f"Google Drive: {'Set' if os.path.exists(os.path.join(os.path.dirname(__file__), '..', 'service_account.json')) else 'Not Set'}")
 
     if not TELEGRAM_BOT_TOKEN:
         print("ERROR: TELEGRAM_BOT_TOKEN is missing")
@@ -605,8 +794,11 @@ def main():
 
     app.add_handler(CommandHandler("start", handle_start))
     app.add_handler(CommandHandler("list", handle_list))
+    app.add_handler(CommandHandler("drive", handle_drive))
+    app.add_handler(CommandHandler("drivelist", handle_drive_list))
+    app.add_handler(CommandHandler("drivefolder", handle_drive_folder))
 
-    app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
+    app.add_handler(MessageHandler(filters.Document.ALL, handle_document_gdrive))
     app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
     app.add_handler(MessageHandler(filters.VOICE, handle_voice))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
