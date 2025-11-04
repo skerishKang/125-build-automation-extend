@@ -4,14 +4,32 @@ API 키 검증 + AI 문서 분석 통합 버전
 """
 from fastapi import FastAPI, Depends, UploadFile, File, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from backend.routers import verify_keys
-from backend.models.user import init_db
-from backend.services.ai_service import (
+
+# Support both package and module execution
+try:
+    from .routers import verify_keys  # type: ignore
+except ImportError:  # pragma: no cover
+    from routers import verify_keys  # type: ignore
+
+try:
+    from .models.user import init_db  # type: ignore
+except ImportError:  # pragma: no cover
+    from models.user import init_db  # type: ignore
+
+try:
+    from .services.ai_service import (
+        summarize_text,
+        analyze_document,
+        rag_answer,
+        health_check as ai_health_check
+    )
+except ImportError:  # pragma: no cover
+    from services.ai_service import (
     summarize_text,
     analyze_document,
     rag_answer,
     health_check as ai_health_check
-)
+    )
 import os
 import tempfile
 import chardet
@@ -87,8 +105,11 @@ app.include_router(
 @app.on_event("startup")
 async def startup_event():
     """서버 시작시 데이터베이스 테이블 생성"""
-    init_db()
-    print("Database initialized")
+    try:
+        init_db()
+        logger.info("Database initialized")
+    except Exception as e:
+        logger.warning(f"DB initialization issue: {e}")
 
 
 # ===== AI 문서 분석 엔드포인트 =====

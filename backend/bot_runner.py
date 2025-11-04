@@ -5,6 +5,7 @@
 """
 import os
 import asyncio
+import tempfile
 import sys
 import logging
 from datetime import datetime
@@ -37,6 +38,16 @@ except ImportError:
     logger.error("python-telegram-bot이 설치되지 않았습니다")
     logger.error("pip install python-telegram-bot==21.6 을 실행해주세요")
     sys.exit(1)
+
+
+# 모든 업데이트 로깅 (디버그용) — Telegram 타입 import 이후에 정의
+async def log_update(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        utype = type(update).__name__
+        chat_id = getattr(getattr(update, 'effective_chat', None), 'id', None)
+        logger.info("UPDATE type=%s chat=%s", utype, chat_id)
+    except Exception:
+        pass
 
 
 # AI 서비스 import (동적으로)
@@ -102,7 +113,7 @@ async def handle_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 💡 **팁:** 여러 문서를 업로드하면 최근 5개까지 저장됩니다.
 """
-    await update.message.reply_text(help_text, parse_mode='Markdown')
+    await update.message.reply_text(help_text)
 
 
 async def handle_health(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -116,12 +127,12 @@ async def handle_health(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
             status = health_check()
 
-            status_text = "🔍 **서비스 상태**\n\n"
-            status_text += f"• Gemini AI: {'✅ 활성화' if status.get('gemini_ai') else '❌ 비활성화'}\n"
-            status_text += f"• RAG 시스템: {'✅ 활성화' if status.get('rag_enabled') else '❌ 비활성화'}\n"
-            status_text += f"• RAG 초기화: {'✅ 완료' if status.get('rag_initialized') else '❌ 미완료'}\n"
+            status_text = "🔍 서비스 상태\n\n"
+            status_text += f"• Gemini AI: {'활성화' if status.get('gemini_ai') else '비활성화'}\n"
+            status_text += f"• RAG 시스템: {'활성화' if status.get('rag_enabled') else '비활성화'}\n"
+            status_text += f"• RAG 초기화: {'완료' if status.get('rag_initialized') else '미완료'}\n"
 
-            await update.message.reply_text(status_text, parse_mode='Markdown')
+            await update.message.reply_text(status_text)
         except Exception as e:
             await update.message.reply_text(f"❌ 상태 확인 실패: {str(e)}")
     else:
@@ -152,7 +163,8 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         # 파일 다운로드
         file = await context.bot.get_file(document.file_id)
-        file_path = f"/tmp/{document.file_id}_{file_name}"
+        tmp_dir = tempfile.gettempdir()
+        file_path = os.path.join(tmp_dir, f"{document.file_id}_{file_name}")
 
         await file.download_to_drive(file_path)
 
@@ -193,14 +205,15 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 os.remove(old_doc['file_path'])
 
         await update.message.reply_text(
-            f"📎 **문서 저장 완료**\n\n"
-            f"**파일명:** {file_name}\n"
-            f"**크기:** {len(text)}자\n\n"
-            f"분석을 원하시면 다음 명령어를 사용하세요:\n"
-            f"• `/summarize` - 문서 요약\n"
-            f"• `/analyze` - 문서 분석\n"
-            f"• `/ask [질문]` - 질문하기",
-            parse_mode='Markdown'
+            (
+                "📎 문서 저장 완료\n\n"
+                f"파일명: {file_name}\n"
+                f"크기: {len(text)}자\n\n"
+                "분석을 원하시면 다음 명령어를 사용하세요:\n"
+                "• /summarize - 문서 요약\n"
+                "• /analyze - 문서 분석\n"
+                "• /ask [질문] - 질문하기"
+            )
         )
 
     except Exception as e:
@@ -232,7 +245,7 @@ async def handle_summarize(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if len(response_msg) > 4000:
             response_msg = response_msg[:3997] + "..."
 
-        await update.message.reply_text(response_msg, parse_mode='Markdown')
+        await update.message.reply_text(response_msg)
 
     except Exception as e:
         logger.error(f"문서 요약 실패: {e}")
@@ -263,7 +276,7 @@ async def handle_analyze(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if len(response_msg) > 4000:
             response_msg = response_msg[:3997] + "..."
 
-        await update.message.reply_text(response_msg, parse_mode='Markdown')
+        await update.message.reply_text(response_msg)
 
     except Exception as e:
         logger.error(f"문서 분석 실패: {e}")
@@ -287,7 +300,7 @@ async def handle_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
         response = "📂 **저장된 문서 목록**\n\n" + "\n".join(doc_list)
         response += f"\n\n총 {len(recent_documents[user_id])}개 문서가 저장되어 있습니다."
 
-        await update.message.reply_text(response, parse_mode='Markdown')
+        await update.message.reply_text(response)
 
     except Exception as e:
         logger.error(f"문서 목록 조회 실패: {e}")
@@ -315,7 +328,7 @@ async def handle_ask(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if len(response_msg) > 4000:
             response_msg = response_msg[:3997] + "..."
 
-        await update.message.reply_text(response_msg, parse_mode='Markdown')
+        await update.message.reply_text(response_msg)
 
     except Exception as e:
         logger.error(f"질문 처리 실패: {e}")
@@ -341,8 +354,8 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
-async def main():
-    """메인 실행 함수"""
+def main():
+    """메인 실행 함수 (동기)"""
     print("=== 125 Build Automation Telegram Bot ===")
     print(f"Env file: {env_file_path}")
     print(f"TELEGRAM_BOT_TOKEN: {'Set' if TELEGRAM_BOT_TOKEN else 'Not Found'}")
@@ -357,8 +370,15 @@ async def main():
     # 텔레그램 애플리케이션 생성
     application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
 
-    me = await application.bot.get_me()
-    logger.info(f"BOT @%s (%s)", me.username, me.id)
+    # 현재 토큰의 봇 핸들명을 안내 (혼동 방지용)
+    try:
+        import requests
+        resp = requests.get(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/getMe", timeout=10)
+        if resp.ok:
+            info = resp.json().get('result', {})
+            print(f"BOT @{info.get('username')} ({info.get('id')})")
+    except Exception as e:
+        logger.warning(f"getMe request failed: {e}")
 
     # 핸들러 등록
     application.add_handler(CommandHandler("start", handle_start))
@@ -370,14 +390,16 @@ async def main():
     application.add_handler(CommandHandler("ask", handle_ask))
     application.add_handler(MessageHandler(filters.Document.ALL, handle_document))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
+    # 마지막에 모든 업데이트 로거 추가
+    application.add_handler(MessageHandler(filters.ALL, log_update))
 
     print("OK: Bot handlers registered")
     print("OK: Starting bot polling...")
     print("SUCCESS: Bot is running... Press Ctrl+C to stop")
 
     try:
-        # 봇 실행
-        await application.run_polling(allowed_updates=Update.ALL_TYPES)
+        # 동기 방식의 run_polling은 자체적으로 이벤트 루프를 관리합니다.
+        application.run_polling()
     except KeyboardInterrupt:
         print("\nINFO: Bot stopped by user")
     except Exception as e:
@@ -385,5 +407,11 @@ async def main():
         import traceback
         traceback.print_exc()
     finally:
-        await application.shutdown()
         print("INFO: Bot shutdown complete")
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except KeyboardInterrupt:
+        pass

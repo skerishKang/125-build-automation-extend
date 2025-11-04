@@ -145,7 +145,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def main():
     """메인"""
     print("=== Telegram Bot Starting ===")
-    print(f"Token: Set" if TELEGRAM_BOT_TOKEN else "Token: Not Set")
+    print(f"Token: {'OK' if TELEGRAM_BOT_TOKEN else 'Not Set'}")
 
     if not TELEGRAM_BOT_TOKEN:
         print("TELEGRAM_BOT_TOKEN not found!")
