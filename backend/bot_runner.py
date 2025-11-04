@@ -245,6 +245,9 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = str(update.effective_user.id)
     username = update.effective_user.first_name or "사용자"
 
+    # 문서 분석용 기본 max_tokens
+    max_tokens = 800
+
     try:
         # MiniMax API 호출 (Anthropic 호환)
         async with httpx.AsyncClient(timeout=30.0) as client:
@@ -288,6 +291,9 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not MINIMAX_API_TOKEN:
         await reply_text(update, "MiniMax 설정이 없어 이미지 분석이 비활성화되어 있어요.")
         return
+
+    # 이미지 분석용 기본 max_tokens
+    max_tokens = 500
     try:
         photo = update.message.photo[-1]
         file = await context.bot.get_file(photo.file_id)
@@ -301,7 +307,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
             }
             data = {
                 "model": "minimax-m2",
-                "max_tokens": 1024,
+                "max_tokens": max_tokens,
                 "messages": [
                     {
                         "role": "user",
@@ -356,6 +362,7 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 return
 
             # MiniMax로 요약/답변 생성
+            max_tokens = 600  # 음성 전사 결과는 중간 길이
             async with httpx.AsyncClient(timeout=30.0) as client:
                 headers = {
                     "x-api-key": MINIMAX_API_TOKEN,
@@ -364,7 +371,7 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 prompt = f"다음 음성 메시지가 전사된 텍스트입니다. 적절히 요약하거나 답변해 주세요:\n\n{transcription}"
                 data = {
                     "model": "minimax-m2",
-                    "max_tokens": 1024,
+                    "max_tokens": max_tokens,
                     "messages": [
                         {
                             "role": "user",
