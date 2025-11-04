@@ -142,7 +142,28 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             context_lines.append(f"User: {m['message']}")
             context_lines.append(f"Assistant: {m['response']}")
         context_lines.append("")
-    prompt = "\n".join(context_lines + [f"현재 사용자 메시지: {text}"])
+
+    # 키워드 감지하여 응답 길이 조절
+    short_keywords = ["요약", "간단히", "짧게", "요약", "간단"]
+    long_keywords = ["자세히", "구체적으로", "설명", "상세히", "자세한"]
+    is_short_question = any(keyword in text for keyword in short_keywords)
+    is_long_question = any(keyword in text for keyword in long_keywords)
+
+    # 스마트 프롬프트
+    if is_long_question:
+        prompt_style = "자세하고 구체적으로 설명해 주세요."
+        max_tokens = 1024
+    elif is_short_question:
+        prompt_style = "간단히 요약해 주세요."
+        max_tokens = 200
+    else:
+        prompt_style = "간단히 요약해 주세요. 더 자세히 필요하면 추가 요청해 주세요."
+        max_tokens = 300
+
+    prompt = "\n".join(context_lines + [
+        f"현재 사용자 메시지: {text}",
+        f"답변 스타일: {prompt_style}"
+    ])
 
     try:
         # MiniMax API 호출 (Anthropic 호환)
@@ -153,7 +174,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             }
             data = {
                 "model": "minimax-m2",
-                "max_tokens": 2048,
+                "max_tokens": max_tokens,
                 "messages": [
                     {
                         "role": "user",
@@ -234,7 +255,7 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
             prompt = f"다음 문서를 요약/분석해줘. 파일명: {doc.file_name}\n\n{text}"
             data = {
                 "model": "minimax-m2",
-                "max_tokens": 2048,
+                "max_tokens": max_tokens,
                 "messages": [
                     {
                         "role": "user",
