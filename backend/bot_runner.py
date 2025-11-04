@@ -965,15 +965,22 @@ def main():
     app.add_handler(MessageHandler(filters.VOICE, handle_voice))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
 
-    # Start Drive monitoring worker after polling starts
-    async def start_monitoring(app):
-        if ENABLE_DRIVE_MONITORING:
-            logger.info("Starting Drive monitoring worker...")
-            asyncio.create_task(monitor_drive_changes())
-
-    app.post_init(start_monitoring)
-
     logger.info("Handlers registered. Starting polling...")
+
+    # Start Drive monitoring in a separate thread
+    if ENABLE_DRIVE_MONITORING:
+        def run_monitoring():
+            import asyncio
+            # Create new event loop for the thread
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            loop.run_until_complete(monitor_drive_changes())
+
+        import threading
+        monitor_thread = threading.Thread(target=run_monitoring, daemon=True)
+        monitor_thread.start()
+        logger.info("Drive monitoring worker started in background thread")
+
     app.run_polling()
 
 
