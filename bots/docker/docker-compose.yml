@@ -1,0 +1,42 @@
+version: '3.8'
+
+services:
+  redis:
+    image: redis:7-alpine
+    container_name: telegram-bots-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    restart: unless-stopped
+    command: redis-server --appendonly yes
+    networks:
+      - bot-network
+
+  telegram-bots:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    container_name: telegram-4-bot-system
+    depends_on:
+      - redis
+    environment:
+      - MAIN_BOT_TOKEN=${MAIN_BOT_TOKEN}
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+    volumes:
+      - bot-logs:/app/logs
+    restart: unless-stopped
+    networks:
+      - bot-network
+    stdin_open: true
+    tty: true
+
+volumes:
+  redis-data:
+  bot-logs:
+
+networks:
+  bot-network:
+    driver: bridge
