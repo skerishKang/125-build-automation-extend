@@ -4,7 +4,7 @@ Gemini 2.5 Flash Client - Shared AI Analysis
 import google.generativeai as genai
 import logging
 import os
-from typing import Any, Optional
+from typing import Any, Optional, Union
 
 logger = logging.getLogger("gemini_client")
 
@@ -107,8 +107,8 @@ class GeminiAnalyzer:
             logger.error(f"Audio analysis error: {e}")
             return f"Error analyzing audio: {str(e)}"
 
-    def analyze_image_description(self, image_path: str) -> str:
-        """Analyze image and provide description"""
+    def analyze_image_description(self, image_source: Union[str, bytes]) -> str:
+        """Analyze image and provide description."""
         if not self.enabled:
             return "Gemini AI not configured"
 
@@ -121,9 +121,11 @@ class GeminiAnalyzer:
         """
 
         try:
-            import base64
-            with open(image_path, "rb") as image_file:
-                image_data = base64.b64encode(image_file.read()).decode('utf-8')
+            if isinstance(image_source, bytes):
+                image_data = image_source
+            else:
+                with open(image_source, "rb") as image_file:
+                    image_data = image_file.read()
 
             image_part = {"mime_type": "image/jpeg", "data": image_data}
             result = self.model.generate_content([prompt, image_part])

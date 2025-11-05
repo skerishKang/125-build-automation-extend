@@ -98,6 +98,14 @@ class TelegramClient:
             logger.error(f"Download file error: {e}")
             return None
 
+    async def get_file(self, file_id: str):
+        """Retrieve a file reference from Telegram without downloading."""
+        try:
+            return await self.bot.get_file(file_id)
+        except Exception as e:
+            logger.error(f"Get file error: {e}")
+            return None
+
 
 async def send_progress_message(
     bot: Bot,
