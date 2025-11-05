@@ -12,7 +12,7 @@ if TYPE_CHECKING:  # pragma: no cover - for type hinting only
 def _runtime():
     """Import the runtime module lazily to avoid circular imports."""
 
-    return import_module("backend.bots.main.runtime")
+    return import_module("backend.bots.main.handlers.runtime")
 
 
 def register_handlers(app: Application) -> Application:

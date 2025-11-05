@@ -28,9 +28,15 @@ SUPABASE_KEY = os.getenv("SUPABASE_ANON_KEY")
 from backend.core import build_application
 from backend.bots import register_main_bot_handlers
 from backend.utils.logger import configure_logging
+from backend.bots.main.services.drive import handlers as drive_handlers
+from backend.bots.main.services.calendar import handlers as calendar_handlers
+from backend.bots.main.services.media import handlers as media_handlers
+from backend.bots.main.services.text import handlers as text_handlers
 
 configure_logging()
 logger = logging.getLogger("unified_bot")
+
+RUNTIME = sys.modules[__name__]
 
 # Disable httpx logging to prevent token exposure
 logging.getLogger("httpx").setLevel(logging.WARNING)
@@ -237,513 +243,88 @@ async def reply_text(update: Update, text: str):
 
 
 async def handle_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    name = update.effective_user.first_name or "사용자"
-    monitoring_status = "🔄 Drive 자동 모니터링" if ENABLE_DRIVE_MONITORING else "📋 Manual Drive 체크"
-    await reply_text(update,
-        f"안녕하세요 {name}님! 👋\n\n"
-        "이 봇은 Gemini 2.5 Flash 기반 \"올인원\"입니다.\n"
-        "- 자유 대화 (메모리 포함)\n"
-        "- 문서/이미지/음성 멀티모달 처리\n"
-        "- Google Drive 양방향 동기화\n"
-        "- Gmail 실시간 감시 및 AI 요약\n"
-        f"- {monitoring_status}\n\n"
-        "📂 **Drive 명령어**: /drive\n"
-        "📧 **Gmail 명령어**: /gmail_on, /gmail_off")
+    """Greet the user and surface primary capabilities."""
+    return await text_handlers.handle_start(RUNTIME, update, context)
+
+
+async def handle_mode(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle /mode command interactions."""
+    return await text_handlers.handle_mode(RUNTIME, update, context)
 
 
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = (update.message.text or "").strip()
-    if not text or text.startswith('/'):
-        return
-
-    if not GEMINI_API_KEY or not gemini_model:
-        await reply_text(update, "Gemini 설정이 없어 대화가 비활성화되어 있어요.")
-        return
-
-    user_id = str(update.effective_user.id)
-    username = update.effective_user.first_name or "사용자"
-
-    # Fetch memory and build context
-    memory = await fetch_memory(user_id)
-    context_lines = []
-    if memory:
-        context_lines.append("[이전 대화 맥락]")
-        for m in memory:
-            context_lines.append(f"User: {m['message']}")
-            context_lines.append(f"Assistant: {m['response']}")
-        context_lines.append("")
-
-    # Smart keyword detection for response length
-    short_keywords = ["요약", "간단히", "짧게", "요약", "간단"]
-    long_keywords = ["자세히", "구체적으로", "설명", "상세히", "자세한"]
-    is_short_question = any(keyword in text for keyword in short_keywords)
-    is_long_question = any(keyword in text for keyword in long_keywords)
-
-    # Smart prompt
-    if is_long_question:
-        prompt_style = "자세하고 구체적으로 설명해 주세요."
-    elif is_short_question:
-        prompt_style = "간단히 요약해 주세요."
-    else:
-        prompt_style = "간단히 요약해 주세요. 더 자세히 필요하면 추가 요청해 주세요."
-
-    prompt = "\n".join(context_lines + [
-        f"현재 사용자 메시지: {text}",
-        f"답변 스타일: {prompt_style}",
-        "항상 한국어로만 답변하고, Markdown 표/코드블록 없이 간결한 문장으로 답하세요."
-    ])
-
-    # Cumulative progress messages
-    progress_messages = []
-    progress_messages.append(await update.message.reply_text("💬 답변 생성 중… [10%]"))
-
-    indicator = ActionIndicator(context, update.effective_chat.id, ChatAction.TYPING)
-    await indicator.__aenter__()
-
-    progress_messages.append(await update.message.reply_text("🧠 Gemini 2.5 Flash 분석 중… [50%]"))
-
-    try:
-        # 2) 블로킹 추론을 스레드로 오프로딩하여 동시 메시지 처리 유지
-        def _call_gemini():
-            resp = gemini_model.generate_content(prompt)
-            return resp.text.strip()
-        raw = await asyncio.to_thread(_call_gemini)
-        answer = format_plain(raw)
-        logger.info(f"Bot replied ({len(answer)} chars): {answer[:100]}...")
-    except Exception as e:
-        logger.error(f"Gemini error: {e}")
-        answer = "죄송해요, 지금은 답변을 생성할 수 없어요."
-    finally:
-        await indicator.__aexit__(None, None, None)
-
-    progress_messages.append(await update.message.reply_text("✅ 답변 완성! [100%]"))
-
-    # 4) Send final result as new message
-    final_text = f"{answer}"
-    await reply_text(update, final_text)
-
-    await save_memory(user_id, username, text, answer)
+    """Main chat handler for free-form text conversation."""
+    return await text_handlers.handle_text(RUNTIME, update, context)
 
 
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not GEMINI_API_KEY or not gemini_model:
-        await reply_text(update, "Gemini 설정이 없어 이미지 분석이 비활성화되어 있어요.")
-        return
-
-    # Cumulative progress messages
-    progress_messages = []
-    progress_messages.append(await update.message.reply_text("📷 이미지를 받았어요. 분석 중… [0%]"))
-
-    try:
-        photo = update.message.photo[-1]
-        file = await context.bot.get_file(photo.file_id)
-        tmp = os.path.join(tempfile.gettempdir(), f"{photo.file_id}.jpg")
-        photo_indicator = ActionIndicator(context, update.effective_chat.id, ChatAction.UPLOAD_PHOTO)
-        await photo_indicator.__aenter__()
-        await file.download_to_drive(tmp)
-
-        # Step update: download complete
-        progress_messages.append(await update.message.reply_text("📷 이미지 다운로드 완료. 멀티모달 분석 중… [50%]"))
-
-        # Use Gemini's multimodal capability - upload image directly
-        import google.generativeai as genai
-        image_part = {"mime_type": "image/jpeg", "data": open(tmp, "rb").read()}
-
-        prompt = "다음 이미지를 한국어로 설명하는 캡션을 작성해줘. 이미지의 주요 내용, 색감/분위기, 맥락을 간결하게 설명해주세요."
-        prompt += "\n\n항상 한국어로만 답변하고, Markdown 표/코드블록 없이 간결한 문장으로 답하세요."
-
-        # Multimodal call with image
-        response = gemini_model.generate_content([prompt, image_part])
-        answer = response.text.strip()
-        answer = format_plain(answer)
-
-        progress_messages.append(await update.message.reply_text("✅ 이미지 분석 완료! [100%]"))
-
-        final_text = f"🖼️ 이미지 설명:\n{answer}"
-        await reply_text(update, final_text)
-    except Exception as e:
-        logger.error(f"photo error: {e}")
-        await reply_text(update, "이미지 처리에 실패했어요.")
-    finally:
-        # Clean up temp file
-        try:
-            if 'tmp' in locals():
-                os.remove(tmp)
-        except Exception:
-            pass
-        try:
-            if 'photo_indicator' in locals():
-                await photo_indicator.__aexit__(None, None, None)
-        except Exception:
-            pass
+    """Handle incoming photos with Gemini multimodal analysis."""
+    return await media_handlers.handle_photo(RUNTIME, update, context)
 
 
 async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not GEMINI_API_KEY or not gemini_model:
-        await reply_text(update, "Gemini 설정이 없어 음성 처리가 비활성화되어 있어요.")
-        return
-
-    # Immediate acknowledgment + background processing message
-    ack_msg = None
-    try:
-        ack_msg = await update.message.reply_text(
-            "🎤 음성을 받았어요. 백그라운드에서 처리 중입니다! "
-            "다른 메시지도 바로 보낼 수 있어요. 😊"
-        )
-    except Exception:
-        ack_msg = None
-
-    chat_id = update.effective_chat.id
-    user_id = str(update.effective_user.id)
-    username = update.effective_user.first_name or "사용자"
-
-    # Create background task for voice processing (non-blocking)
-    asyncio.create_task(process_voice_background(update, context, chat_id, user_id, username, ack_msg))
+    """Handle incoming voice messages with adaptive processing."""
+    return await media_handlers.handle_voice(RUNTIME, update, context)
 
 
 async def process_voice_background(update, context, chat_id, user_id, username, ack_msg):
-    """Process voice in background - non-blocking, allows immediate responses"""
-    voice = update.message.voice
-    file = await context.bot.get_file(voice.file_id)
-    ogg_path = os.path.join(tempfile.gettempdir(), f"{voice.file_id}.ogg")
-    wav_path = os.path.join(tempfile.gettempdir(), f"{voice.file_id}.wav")
-
-    # Progress tracking for voice processing
-    progress_messages = []
-
-    try:
-        # Download voice file
-        await file.download_to_drive(ogg_path)
-        progress_messages.append(await context.bot.send_message(chat_id, "📥 음성 파일 다운로드 완료. [20%]"))
-
-        # Get audio duration
-        duration = get_audio_duration(ogg_path)
-        progress_messages.append(await context.bot.send_message(chat_id, f"⏱️ 음성 길이 분석: {duration:.1f}초. 처리 방식 결정 중... [40%]"))
-
-        # Select model based on duration
-        if duration <= SHORT_AUDIO_THRESHOLD:
-            # SHORT: Use Gemini 2.5 Flash (multimodal, fast)
-            result = await process_with_gemini_multimodal(ogg_path, duration, chat_id, context, progress_messages)
-            mode = "Gemini 2.5 Flash (멀티모달)"
-        elif duration >= LONG_AUDIO_THRESHOLD:
-            # LONG: Use Whisper + Gemini (accurate, free)
-            result = await process_with_whisper_gemini(ogg_path, wav_path, duration, chat_id, context, progress_messages)
-            mode = "Whisper + Gemini (정확도 최적화)"
-        else:
-            # MID: Use environment setting
-            if MID_LENGTH_MODEL == "gemini":
-                result = await process_with_gemini_multimodal(ogg_path, duration, chat_id, context, progress_messages)
-                mode = "Gemini 2.5 Flash (멀티모달)"
-            else:
-                result = await process_with_whisper_gemini(ogg_path, wav_path, duration, chat_id, context, progress_messages)
-                mode = "Whisper + Gemini (정확도 최적화)"
-
-        progress_messages.append(await context.bot.send_message(chat_id, "✅ 음성 처리 완료! [100%]"))
-
-        # Send result
-        if result:
-            final_text = f"🎤 {mode} 처리 결과 ({duration:.1f}초):\n\n{result}"
-            await context.bot.send_message(chat_id, final_text)
-
-            # Save to memory
-            await save_memory(user_id, username, f"[음성] {duration:.1f}초", result)
-
-    except Exception as e:
-        logger.error(f"Voice processing error: {e}")
-        error_msg = f"음성 처리 중 오류가 발생했어요: {str(e)[:100]}"
-        await context.bot.send_message(chat_id, error_msg)
-    finally:
-        # Clean up
-        try:
-            for path in [ogg_path, wav_path]:
-                if os.path.exists(path):
-                    os.remove(path)
-        except Exception:
-            pass
+    """Process voice in background - non-blocking, allows immediate responses."""
+    return await media_handlers.process_voice_background(RUNTIME, update, context, chat_id, user_id, username, ack_msg)
 
 
 async def process_with_gemini_multimodal(ogg_path: str, duration: float, chat_id: int, context, progress_messages):
-    """Process short audio with Gemini 2.5 Flash multimodal"""
-    # Send progress update
-    progress_messages.append(await context.bot.send_message(chat_id, f"🎤 {duration:.1f}초 (짧음) - Gemini 2.5 Flash 멀티모달 분석 중... [60%]"))
-
-    # Upload audio directly to Gemini
-    import google.generativeai as genai
-    audio_data = open(ogg_path, "rb").read()
-    audio_part = {"mime_type": "audio/ogg", "data": audio_data}
-
-    prompt = (
-        "이 음성 메시지를 한국어로 전사하고 적절히 요약/답변해주세요.\n"
-        "음성 내용에 직접 답할 수 있는 질문이면 답변도 제공해주세요.\n"
-        "항상 한국어로만 답변하고, Markdown 표/코드블록 없이 간결한 문장으로 답하세요."
-    )
-
-    # Call Gemini in thread pool
-    def _call_gemini():
-        response = gemini_model.generate_content([prompt, audio_part])
-        return response.text.strip()
-
-    result = await asyncio.to_thread(_call_gemini)
-    return format_plain(result)
+    """Process short audio with Gemini 2.5 Flash multimodal."""
+    return await media_handlers.process_with_gemini_multimodal(RUNTIME, ogg_path, duration, chat_id, context, progress_messages)
 
 
 async def process_with_whisper_gemini(ogg_path: str, wav_path: str, duration: float, chat_id: int, context, progress_messages):
-    """Process long audio with Whisper + Gemini"""
-    # Send progress update
-    progress_messages.append(await context.bot.send_message(chat_id, f"🎤 {duration:.1f}초 (김음) - Whisper로 전사 중... [60%]"))
-
-    # Convert ogg to wav (async)
-    try:
-        proc = await asyncio.create_subprocess_exec(
-            "ffmpeg", "-y", "-i", ogg_path, "-ar", "16000", "-ac", "1", wav_path,
-            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
-        )
-        _stdout, _stderr = await proc.communicate()
-        if proc.returncode != 0:
-            raise RuntimeError("ffmpeg 변환 실패")
-    except Exception as e:
-        raise Exception(f"오디오 변환 실패: {str(e)}")
-
-    # Send progress update
-    progress_messages.append(await context.bot.send_message(chat_id, f"🎤 전사 완료! Gemini로 요약 중... [80%]"))
-
-    # Whisper transcription (in thread pool)
-    try:
-        from faster_whisper import WhisperModel
-        if not hasattr(process_with_whisper_gemini, "_whisper"):
-            process_with_whisper_gemini._whisper = WhisperModel("base", device="cpu", compute_type="int8")
-        wmodel = process_with_whisper_gemini._whisper
-
-        def _transcribe():
-            segs, _info = wmodel.transcribe(wav_path, language="ko", vad_filter=True)
-            return " ".join([s.text.strip() for s in segs if s.text]).strip()
-
-        transcription = await asyncio.to_thread(_transcribe)
-
-        if not transcription:
-            return "음성에서 텍스트를 인식하지 못했어요."
-
-        # Gemini summary (in thread pool)
-        def _summarize():
-            prompt = (
-                f"다음 음성 메시지가 전사된 텍스트입니다. 적절히 요약하거나 답변해 주세요:\n\n{transcription}\n\n"
-                "항상 한국어로만 답변하고, Markdown 표/코드블록 없이 간결한 문장으로 답하세요."
-            )
-            response = gemini_model.generate_content(prompt)
-            return response.text.strip()
-
-        result = await asyncio.to_thread(_summarize)
-        return format_plain(result)
-
-    except ImportError:
-        return "faster-whisper가 설치되어 있지 않아요. 백엔드 관리자에게 문의해주세요."
+    """Process long audio with Whisper + Gemini."""
+    return await media_handlers.process_with_whisper_gemini(RUNTIME, ogg_path, wav_path, duration, chat_id, context, progress_messages)
 
 
 async def handle_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    docs = recent_documents.get(user_id, [])[-5:]
-    if not docs:
-        await reply_text(update, "저장된 최근 문서가 없어요.")
-        return
-    lines = [f"{i+1}. {d['file_name']} ({d['text_length']}자)" for i, d in enumerate(docs)]
-    await reply_text(update, "최근 문서 목록:\n" + "\n".join(lines))
+    """Display the user's recent document history."""
+    return await text_handlers.handle_list(RUNTIME, update, context)
 
 
 # ========== Google Drive Sync Handlers ==========
 
 async def handle_drive(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle /drive command - show Google Drive sync help"""
-    help_text = (
-        "📁 **Google Drive 동기화 가이드**\n\n"
-        "**사용 가능한 명령어:**\n"
-        "• `/drive` - 이 도움말 보기\n"
-        "• `/drivelist` - 드라이브 파일 목록 보기\n"
-        "• `/driveget <file_id>` - 드라이브에서 파일 가져오기\n"
-        "• `/drivesync` - 새로 올라온 파일 확인\n\n"
-        "**자동 동기화:**\n"
-        "✓ 텔레그램 파일 자동 드라이브 저장 + Gemini 분석\n\n"
-        "**지원 파일 형식:**\n"
-        "✓ 텍스트: txt, md, py, js, html, css, json, xml, csv 등\n"
-        "✓ Office: pdf, docx, pptx, xlsx\n"
-        "✓ 압축: zip (내용 미리보기)\n\n"
-        "**예시:**\n"
-        "1. `/drivelist` - 전체 파일 목록 보기\n"
-        "2. `/driveget 1A2B3C4D` - ID가 1A2B3C4D인 파일 다운로드\n"
-        "3. `/drivesync` - 새 파일 체크\n"
-        "4. 파일 전송 → 자동 드라이브 저장 + 분석\n"
-    )
-    await reply_text(update, help_text)
+    """Handle /drive command - show Google Drive sync help."""
+    return await drive_handlers.handle_drive(RUNTIME, update, context)
 
 
 async def handle_drive_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle /drivelist command - list all files in Google Drive"""
-    progress_messages = []
-    progress_messages.append(await update.message.reply_text("📁 드라이브 파일 목록 조회 중... [0%]"))
-
-    try:
-        # Add backend to path for Telegram handlers
-        import sys
-        import os
-        backend_path = os.path.join(os.path.dirname(__file__))
-        if backend_path not in sys.path:
-            sys.path.insert(0, backend_path)
-
-        from services.drive_sync import get_folder_files, format_file_list
-
-        progress_messages.append(await update.message.reply_text("📂 드라이브 연결 중... [30%]"))
-
-        files = get_folder_files()
-
-        progress_messages.append(await update.message.reply_text("📋 파일 목록 생성 중... [70%]"))
-
-        result = format_file_list(files)
-
-        progress_messages.append(await update.message.reply_text("✅ 조회 완료! [100%]"))
-
-        await reply_text(update, result)
-
-    except Exception as e:
-        logger.error(f"Drive list error: {e}")
-        await reply_text(update, f"드라이브 목록 조회 중 오류가 발생했어요: {str(e)[:100]}")
+    """Handle /drivelist command - list all files in Google Drive."""
+    return await drive_handlers.handle_drive_list(RUNTIME, update, context)
 
 
 async def handle_drive_get(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle /driveget command - download a file from Google Drive"""
-    args = context.args
-    if not args:
-        await reply_text(update, "사용법: `/driveget <file_id>`\n\n예: `/driveget 1A2B3C4D`")
-        return
-
-    file_id = args[0]
-
-    progress_messages = []
-    progress_messages.append(await update.message.reply_text(f"📥 드라이브에서 파일 다운로드 중... [0%]"))
-
-    try:
-        # Add backend to path for Telegram handlers
-        import sys
-        import os
-        backend_path = os.path.join(os.path.dirname(__file__))
-        if backend_path not in sys.path:
-            sys.path.insert(0, backend_path)
-
-        from backend.services.drive_sync import get_file_info, download_file
-
-        progress_messages.append(await update.message.reply_text("📂 파일 정보 조회 중... [30%]"))
-
-        file_info = get_file_info(file_id)
-
-        if not file_info:
-            progress_messages.append(await update.message.reply_text("❌ 파일을 찾을 수 없습니다 [100%]"))
-            await reply_text(update, "❌ 파일을 찾을 수 없어요. File ID를 확인해주세요.")
-            return
-
-        file_name = file_info['name']
-        progress_messages.append(await update.message.reply_text(f"📄 {file_name} 다운로드 중... [60%]"))
-
-        # Download file
-        tmp_path = os.path.join(tempfile.gettempdir(), f"drive_download_{file_id}_{file_name}")
-        success = download_file(file_id, tmp_path)
-
-        if not success:
-            progress_messages.append(await update.message.reply_text("❌ 다운로드 실패 [100%]"))
-            await reply_text(update, "❌ 파일 다운로드에 실패했어요.")
-            return
-
-        progress_messages.append(await update.message.reply_text("✅ 다운로드 완료! [100%]"))
-
-        # Send file to Telegram
-        with open(tmp_path, 'rb') as f:
-            from telegram import InputFile
-            await context.bot.send_document(
-                chat_id=update.effective_chat.id,
-                document=InputFile(f, filename=file_name),
-                caption=f"📄 **드라이브에서 가져온 파일**: {file_name}"
-            )
-
-        # Clean up
-        try:
-            os.remove(tmp_path)
-        except Exception:
-            pass
-
-    except Exception as e:
-        logger.error(f"Drive get error: {e}")
-        await reply_text(update, f"파일 다운로드 중 오류가 발생했어요: {str(e)[:100]}")
+    """Handle /driveget command - download a file from Google Drive."""
+    return await drive_handlers.handle_drive_get(RUNTIME, update, context)
 
 
 async def handle_drive_sync(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle /drivesync command - check for new files in Google Drive"""
-    progress_messages = []
-    progress_messages.append(await update.message.reply_text("🔍 드라이브 새 파일 확인 중... [0%]"))
-
-    try:
-        # Add backend to path for Telegram handlers
-        import sys
-        import os
-        backend_path = os.path.join(os.path.dirname(__file__))
-        if backend_path not in sys.path:
-            sys.path.insert(0, backend_path)
-
-        from backend.services.drive_sync import check_new_files, get_folder_files, check_deleted_files
-
-        progress_messages.append(await update.message.reply_text("📂 드라이브 스캔 중... [50%]"))
-
-        # Get current files and check for new/deleted
-        current_files = get_folder_files()
-        new_files = check_new_files()
-        deleted_files = check_deleted_files(current_files)
-
-        progress_messages.append(await update.message.reply_text("✅ 확인 완료! [100%]"))
-
-        # Format results
-        result_lines = []
-        has_changes = False
-
-        if new_files:
-            has_changes = True
-            result_lines.append(f"🆕 **새로 올라온 파일** ({len(new_files)}개):\n")
-            for i, file in enumerate(new_files, 1):
-                file_type = "📁 폴더" if file.get('mimeType') == 'application/vnd.google-apps.folder' else "📄 파일"
-                result_lines.append(f"{i}. {file_type}: **{file['name']}**")
-                result_lines.append(f"   ID: `{file['id']}`")
-            result_lines.append("")
-
-        if deleted_files:
-            has_changes = True
-            result_lines.append(f"🗑️ **삭제된 파일** ({len(deleted_files)}개):\n")
-            for i, file in enumerate(deleted_files, 1):
-                result_lines.append(f"{i}. **{file['name']}**")
-                result_lines.append(f"   ID: `{file['id']}`")
-            result_lines.append("")
-
-        if not has_changes:
-            await reply_text(update, "📭 새 파일이 없습니다.")
-        else:
-            await reply_text(update, "\n".join(result_lines).strip())
-
-    except Exception as e:
-        logger.error(f"Drive sync error: {e}")
-        await reply_text(update, f"새 파일 확인 중 오류가 발생했어요: {str(e)[:100]}")
-
+    """Handle /drivesync command - check for new files in Google Drive."""
+    return await drive_handlers.handle_drive_sync(RUNTIME, update, context)
 
 # ========== Gmail Handlers ==========
 
 
 async def handle_gmail_on(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    return await gmail_handle_on(sys.modules[__name__], update, context)
+    return await gmail_handle_on(RUNTIME, update, context)
 
 
 async def handle_gmail_off(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    return await gmail_handle_off(sys.modules[__name__], update, context)
+    return await gmail_handle_off(RUNTIME, update, context)
 
 
 async def handle_gmail_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    return await gmail_handle_status(sys.modules[__name__], update, context)
+    return await gmail_handle_status(RUNTIME, update, context)
 
 
 async def handle_gmail_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    return await gmail_handle_list(sys.modules[__name__], update, context)
+    return await gmail_handle_list(RUNTIME, update, context)
 
 # ========== Gmail Monitoring Functions ==========
 
@@ -882,508 +463,58 @@ async def process_and_send_email(email_data):
 # ========== Calendar Handlers ==========
 
 async def handle_cal_on(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle /cal_on command - Start Calendar monitoring"""
-    global calendar_monitoring_state
-
-    if calendar_monitoring_state["enabled"]:
-        await reply_text(update,
-            "🟡 **Calendar 감시가 이미 실행 중이에요!**\n"
-            f"- 현재까지 {calendar_monitoring_state['total_alerts']}개 알림 보냄\n"
-            "- `/cal_status`로 상세 상태 확인")
-        return
-
-    # Test Calendar connection
-    test_msg = await reply_text(update, "🗓️ Calendar 연결 테스트 중...")
-
-    try:
-        # Add backend to path for Calendar handlers
-        import sys
-        import os
-        backend_path = os.path.join(os.path.dirname(__file__))
-        if backend_path not in sys.path:
-            sys.path.insert(0, backend_path)
-
-        from backend.services.calendar import get_calendar_service
-
-        # Test Calendar connection
-        calendar_service = get_calendar_service()
-        test_events = calendar_service.get_today_events()
-
-        await context.bot.edit_message_text(
-            chat_id=update.effective_chat.id,
-            message_id=test_msg.message_id,
-            text="✅ Calendar 연결 성공! 감시를 시작합니다..."
-        )
-
-        # Start monitoring
-        calendar_monitoring_state["enabled"] = True
-        calendar_monitoring_state["total_alerts"] = 0
-        calendar_monitoring_state["start_time"] = datetime.now().isoformat()
-        calendar_monitoring_state["alerted_events"] = set()
-        start_calendar_monitoring()
-
-        await asyncio.sleep(1)
-
-        final_msg = """
-🟢 **Calendar 실시간 감시 시작!**
-
-📋 **감시 설정**:
-- 확인 주기: 5분마다
-- 대상: 다가오는 일정 (30분 전 알림)
-- AI 분석: Gemini 2.5 Flash
-- 즉시 텔레그램 알림
-
-💡 **명령어**:
-- `/cal_off` - 감시 중지
-- `/cal_status` - 상태 확인
-- `/cal_today` - 오늘 일정
-- `/cal_tomorrow` - 내일 일정
-- `/cal_week` - 이번 주 일정
-- `/cal_search <키워드>` - 일정 검색
-        """.strip()
-
-        await context.bot.edit_message_text(
-            chat_id=update.effective_chat.id,
-            message_id=test_msg.message_id,
-            text=final_msg
-        )
-
-    except Exception as e:
-        logger.error(f"Calendar start error: {e}")
-        await context.bot.edit_message_text(
-            chat_id=update.effective_chat.id,
-            message_id=test_msg.message_id,
-            text=f"❌ Calendar 연결 실패: {str(e)[:100]}"
-        )
+    """Handle /cal_on command - Start Calendar monitoring."""
+    return await calendar_handlers.handle_cal_on(RUNTIME, update, context)
 
 
 async def handle_cal_off(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle /cal_off command - Stop Calendar monitoring"""
-    global calendar_monitoring_state
-
-    if not calendar_monitoring_state["enabled"]:
-        await reply_text(update, "🔴 Calendar 감시가 이미 중지되어 있어요!")
-        return
-
-    calendar_monitoring_state["enabled"] = False
-    total_alerts = calendar_monitoring_state.get("total_alerts", 0)
-
-    stop_message = f"""
-📅 **Calendar 감시 중지됨**
-
-📊 **이번 세션 통계**:
-- 보낸 알림: {total_alerts}개
-- 감시 시간: {calendar_monitoring_state.get('start_time', '확인 불가')}부터
-
-💡 **재시작하려면**:
-- `/cal_on` - 감시 다시 시작
-- `/cal_today` - 수동으로 오늘 일정 확인
-    """.strip()
-
-    await reply_text(update, stop_message)
+    """Handle /cal_off command - Stop Calendar monitoring."""
+    return await calendar_handlers.handle_cal_off(RUNTIME, update, context)
 
 
 async def handle_cal_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle /cal_status command - Check Calendar monitoring status"""
-    global calendar_monitoring_state
-
-    status_icon = "🟢" if calendar_monitoring_state["enabled"] else "🔴"
-    status_text = "실행 중" if calendar_monitoring_state["enabled"] else "중지됨"
-
-    last_check = calendar_monitoring_state.get("last_check", "없음")
-    total_alerts = calendar_monitoring_state.get("total_alerts", 0)
-
-    # Get today's events if running
-    if calendar_monitoring_state["enabled"]:
-        try:
-            import sys
-            import os
-            backend_path = os.path.join(os.path.dirname(__file__))
-            if backend_path not in sys.path:
-                sys.path.insert(0, backend_path)
-
-            from backend.services.calendar import get_calendar_service
-            calendar_service = get_calendar_service()
-            today_events = calendar_service.get_today_events()
-            today_count = len(today_events)
-        except:
-            today_count = "확인 불가"
-    else:
-        today_count = "감시 중지됨"
-
-    status_message = f"""
-📊 **Calendar 감시 상태**
-
-{status_icon} **상태**: {status_text}
-🕒 **마지막 확인**: {last_check}
-📅 **보낸 알림**: {total_alerts}개
-📋 **오늘 일정**: {today_count}개
-
-⚙️ **설정**:
-- 확인 주기: 5분마다
-- 알림: 30분 전 일정
-- AI 분석: Gemini 2.5 Flash
-
-💡 **사용 가능한 명령어**:
-- `/cal_on` - 감시 시작
-- `/cal_off` - 감시 중지
-- `/cal_today` - 오늘 일정
-- `/cal_tomorrow` - 내일 일정
-- `/cal_week` - 이번 주 일정
-- `/cal_search <키워드>` - 일정 검색
-    """.strip()
-
-    await reply_text(update, status_message)
+    """Handle /cal_status command - Check Calendar monitoring status."""
+    return await calendar_handlers.handle_cal_status(RUNTIME, update, context)
 
 
 async def handle_cal_today(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle /cal_today command - Show today's events"""
-    ack_msg = await reply_text(update, "🗓️ 오늘 일정 조회 중...")
-
-    try:
-        # Add backend to path for Calendar handlers
-        import sys
-        import os
-        backend_path = os.path.join(os.path.dirname(__file__))
-        if backend_path not in sys.path:
-            sys.path.insert(0, backend_path)
-
-        from backend.services.calendar import get_calendar_service, format_event_list
-
-        calendar_service = get_calendar_service()
-        today_events = calendar_service.get_today_events()
-
-        result = format_event_list(today_events, "오늘의 일정")
-
-        await context.bot.edit_message_text(
-            chat_id=update.effective_chat.id,
-            message_id=ack_msg.message_id,
-            text=result
-        )
-
-    except Exception as e:
-        logger.error(f"Calendar today error: {e}")
-        await context.bot.edit_message_text(
-            chat_id=update.effective_chat.id,
-            message_id=ack_msg.message_id,
-            text=f"❌ 오늘 일정 조회 중 오류가 발생했어요: {str(e)[:100]}"
-        )
+    """Handle /cal_today command - Show today's events."""
+    return await calendar_handlers.handle_cal_today(RUNTIME, update, context)
 
 
 async def handle_cal_tomorrow(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle /cal_tomorrow command - Show tomorrow's events"""
-    ack_msg = await reply_text(update, "🗓️ 내일 일정 조회 중...")
-
-    try:
-        # Add backend to path for Calendar handlers
-        import sys
-        import os
-        backend_path = os.path.join(os.path.dirname(__file__))
-        if backend_path not in sys.path:
-            sys.path.insert(0, backend_path)
-
-        from backend.services.calendar import get_calendar_service, format_event_list
-
-        calendar_service = get_calendar_service()
-        tomorrow_events = calendar_service.get_tomorrow_events()
-
-        result = format_event_list(tomorrow_events, "내일의 일정")
-
-        await context.bot.edit_message_text(
-            chat_id=update.effective_chat.id,
-            message_id=ack_msg.message_id,
-            text=result
-        )
-
-    except Exception as e:
-        logger.error(f"Calendar tomorrow error: {e}")
-        await context.bot.edit_message_text(
-            chat_id=update.effective_chat.id,
-            message_id=ack_msg.message_id,
-            text=f"❌ 내일 일정 조회 중 오류가 발생했어요: {str(e)[:100]}"
-        )
+    """Handle /cal_tomorrow command - Show tomorrow's events."""
+    return await calendar_handlers.handle_cal_tomorrow(RUNTIME, update, context)
 
 
 async def handle_cal_week(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle /cal_week command - Show this week's events"""
-    ack_msg = await reply_text(update, "🗓️ 이번 주 일정 조회 중...")
-
-    try:
-        # Add backend to path for Calendar handlers
-        import sys
-        import os
-        backend_path = os.path.join(os.path.dirname(__file__))
-        if backend_path not in sys.path:
-            sys.path.insert(0, backend_path)
-
-        from backend.services.calendar import get_calendar_service, format_event_list
-
-        calendar_service = get_calendar_service()
-        week_events = calendar_service.get_week_events()
-
-        result = format_event_list(week_events, "이번 주 일정")
-
-        await context.bot.edit_message_text(
-            chat_id=update.effective_chat.id,
-            message_id=ack_msg.message_id,
-            text=result
-        )
-
-    except Exception as e:
-        logger.error(f"Calendar week error: {e}")
-        await context.bot.edit_message_text(
-            chat_id=update.effective_chat.id,
-            message_id=ack_msg.message_id,
-            text=f"❌ 이번 주 일정 조회 중 오류가 발생했어요: {str(e)[:100]}"
-        )
+    """Handle /cal_week command - Show this week's events."""
+    return await calendar_handlers.handle_cal_week(RUNTIME, update, context)
 
 
 async def handle_cal_search(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle /cal_search command - Search for events"""
-    args = context.args
-    if not args:
-        await reply_text(update, "사용법: `/cal_search <검색어>`\n\n예: `/cal_search 미팅`")
-        return
-
-    search_query = " ".join(args)
-    ack_msg = await reply_text(update, f"🔍 '{search_query}' 일정 검색 중...")
-
-    try:
-        # Add backend to path for Calendar handlers
-        import sys
-        import os
-        backend_path = os.path.join(os.path.dirname(__file__))
-        if backend_path not in sys.path:
-            sys.path.insert(0, backend_path)
-
-        from backend.services.calendar import get_calendar_service, format_event_list
-
-        calendar_service = get_calendar_service()
-        search_results = calendar_service.search_events(search_query, max_results=20)
-
-        result = format_event_list(search_results, f"검색 결과: {search_query}")
-
-        await context.bot.edit_message_text(
-            chat_id=update.effective_chat.id,
-            message_id=ack_msg.message_id,
-            text=result
-        )
-
-    except Exception as e:
-        logger.error(f"Calendar search error: {e}")
-        await context.bot.edit_message_text(
-            chat_id=update.effective_chat.id,
-            message_id=ack_msg.message_id,
-            text=f"❌ 일정 검색 중 오류가 발생했어요: {str(e)[:100]}"
-        )
-
+    """Handle /cal_search command - Search for events."""
+    return await calendar_handlers.handle_cal_search(RUNTIME, update, context)
 
 # ========== Calendar Monitoring Functions ==========
 
 def start_calendar_monitoring():
-    """Start Calendar monitoring in background thread"""
-    import threading
-    if calendar_monitoring_state["thread"] and calendar_monitoring_state["thread"].is_alive():
-        return
-
-    calendar_monitoring_state["thread"] = threading.Thread(
-        target=calendar_monitor_loop,
-        daemon=True
-    )
-    calendar_monitoring_state["thread"].start()
-    logger.info("🗓️ Calendar monitoring started")
+    """Start Calendar monitoring in background thread."""
+    return calendar_handlers.start_calendar_monitoring(RUNTIME)
 
 
 def calendar_monitor_loop():
-    """Background Calendar monitoring loop"""
-    import time
-
-    try:
-        # Add backend to path for Thread
-        import sys
-        import os
-        backend_path = os.path.join(os.path.dirname(__file__))
-        if backend_path not in sys.path:
-            sys.path.insert(0, backend_path)
-
-        from backend.services.calendar import get_calendar_service, get_upcoming_events
-
-        calendar_service = get_calendar_service()
-
-        logger.info("🗓️ Calendar monitoring worker started")
-
-        while calendar_monitoring_state["enabled"]:
-            try:
-                logger.info("🗓️ Checking for upcoming events...")
-
-                # Get events in next 30 minutes
-                upcoming_events = get_upcoming_events(minutes_ahead=30)
-                new_alerts = []
-
-                for event in upcoming_events:
-                    event_id = event.get('id', '')
-
-                    # Check if already alerted
-                    if event_id and event_id not in calendar_monitoring_state["alerted_events"]:
-                        new_alerts.append(event)
-                        calendar_monitoring_state["alerted_events"].add(event_id)
-
-                # Send notifications for new alerts
-                if new_alerts:
-                    logger.info(f"🗓️ Found {len(new_alerts)} upcoming events")
-                    calendar_monitoring_state["total_alerts"] += len(new_alerts)
-
-                    for event_data in new_alerts:
-                        asyncio.run_coroutine_threadsafe(
-                            process_and_send_calendar_alert(event_data),
-                            asyncio.get_event_loop()
-                        )
-
-                calendar_monitoring_state["last_check"] = datetime.now().strftime("%H:%M:%S")
-
-                # Wait 5 minutes
-                for _ in range(300):  # Check every second for shutdown
-                    if not calendar_monitoring_state["enabled"]:
-                        break
-                    time.sleep(1)
-
-            except Exception as e:
-                logger.error(f"Calendar monitoring error: {e}")
-                time.sleep(60)  # Wait 1 minute on error
-
-        logger.info("🗓️ Calendar monitoring worker stopped")
-
-    except Exception as e:
-        logger.error(f"Calendar monitoring loop error: {e}")
+    """Background Calendar monitoring loop."""
+    return calendar_handlers.calendar_monitor_loop(RUNTIME)
 
 
 async def process_and_send_calendar_alert(event_data):
-    """Process event and send alert to Telegram"""
-    try:
-        # Get start and end time
-        start = event_data.get('start', {})
-        end = event_data.get('end', {})
-        
-        # Format time
-        time_str = ""
-        if 'dateTime' in start:
-            start_dt = datetime.fromisoformat(start['dateTime'].replace('Z', '+00:00'))
-            end_dt = datetime.fromisoformat(end['dateTime'].replace('Z', '+00:00'))
-            time_str = f"{start_dt.strftime('%H:%M')} - {end_dt.strftime('%H:%M')}"
-        else:
-            time_str = "종일"
-
-        title = event_data.get('summary', '제목 없음')
-        location = event_data.get('location', '')
-        description = event_data.get('description', '')
-
-        # Create message
-        alert_message = f"""
-🔔 **30분 후 일정 알림**
-
-📅 **일정**: {title}
-⏰ **시간**: {time_str}
-        """.strip()
-
-        if location:
-            alert_message += f"\n📍 **장소**: {location}"
-
-        if description:
-            desc_preview = description[:100]
-            if len(description) > 100:
-                desc_preview += "..."
-            alert_message += f"\n📝 **설명**: {desc_preview}"
-
-        alert_message += "\n\n⏰ 준비하세요!"
-
-        # Send to all active chats (for now, broadcast to first chat)
-        if _app_instance and _app_instance.chat_ids:
-            for chat_id in _app_instance.chat_ids:
-                try:
-                    await _app_instance.bot.send_message(
-                        chat_id=chat_id,
-                        text=alert_message
-                    )
-                except Exception as e:
-                    logger.error(f"Failed to send calendar alert to {chat_id}: {e}")
-
-    except Exception as e:
-        logger.error(f"Calendar alert processing error: {e}")
-
+    """Process event and send alert to Telegram."""
+    return await calendar_handlers.process_and_send_calendar_alert(RUNTIME, event_data)
 
 async def monitor_drive_changes():
-    """Background task to monitor Google Drive for changes"""
-    logger.info("🔍 Drive monitoring worker started")
-
-    # Add backend to path for Thread
-    import sys
-    import os
-    backend_path = os.path.join(os.path.dirname(__file__))
-    if backend_path not in sys.path:
-        sys.path.insert(0, backend_path)
-
-    while True:
-        try:
-            if not ENABLE_DRIVE_MONITORING:
-                await asyncio.sleep(60)
-                continue
-
-            from services.drive_sync import (
-                get_folder_files, check_new_files, check_deleted_files,
-                cache_current_files, load_cached_files
-            )
-
-            # Get current files
-            current_files = get_folder_files()
-
-            # Check for deleted files
-            deleted_files = check_deleted_files(current_files)
-
-            # Check for new files
-            new_files = check_new_files()
-
-            # Broadcast notifications if there are changes
-            if (new_files or deleted_files) and _app_instance:
-                message_parts = []
-
-                if new_files:
-                    message_parts.append(f"🆕 **새로 올라온 파일** ({len(new_files)}개):")
-                    for file in new_files[:5]:  # Show max 5 files
-                        file_type = "📁 폴더" if file.get('mimeType') == 'application/vnd.google-apps.folder' else "📄"
-                        message_parts.append(f"• {file_type}: {file['name']}")
-                    if len(new_files) > 5:
-                        message_parts.append(f"... 외 {len(new_files) - 5}개")
-                    message_parts.append("")
-
-                if deleted_files:
-                    message_parts.append(f"🗑️ **삭제된 파일** ({len(deleted_files)}개):")
-                    for file in deleted_files[:5]:  # Show max 5 files
-                        message_parts.append(f"• {file['name']}")
-                    if len(deleted_files) > 5:
-                        message_parts.append(f"... 외 {len(deleted_files) - 5}개")
-                    message_parts.append("")
-
-                notification_text = "\n".join(message_parts).strip()
-
-                # Get all chat IDs that have interacted with the bot
-                # For now, we'll log the changes (implement user tracking if needed)
-                logger.info(f"Drive changes detected: {len(new_files)} new, {len(deleted_files)} deleted")
-
-                # TODO: Implement broadcast to specific users
-                # This requires tracking which users have enabled Drive notifications
-
-            # Update cache if it's empty (first run)
-            if not load_cached_files():
-                cache_current_files(current_files)
-                logger.info("Initialized Drive file cache")
-
-        except Exception as e:
-            logger.error(f"Drive monitoring error: {e}")
-
-        # Wait for next check
-        await asyncio.sleep(DRIVE_MONITOR_INTERVAL)
-
-    logger.info("🔍 Drive monitoring worker stopped")
+    """Background task to monitor Google Drive for changes."""
+    return await drive_handlers.monitor_drive_changes(RUNTIME)
 
 
 def extract_text_from_file(file_path: str, file_name: str) -> str:
@@ -1493,93 +624,8 @@ def extract_text_from_file(file_path: str, file_name: str) -> str:
 
 
 async def handle_document_auto_save(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Auto-save all documents to Google Drive and analyze with Gemini"""
-    doc = update.message.document
-    if not doc:
-        return
-
-    progress_messages = []
-    progress_messages.append(await update.message.reply_text(f"📁 {doc.file_name} Google Drive 자동 저장 중... [0%]"))
-
-    file = await context.bot.get_file(doc.file_id)
-    tmp = os.path.join(tempfile.gettempdir(), f"{doc.file_id}_{doc.file_name}")
-
-    doc_indicator = ActionIndicator(context, update.effective_chat.id, ChatAction.UPLOAD_DOCUMENT)
-    await doc_indicator.__aenter__()
-    await file.download_to_drive(tmp)
-
-    progress_messages.append(await update.message.reply_text("📁 파일 다운로드 완료. 드라이브 저장 중... [30%]"))
-
-    try:
-        # Add backend to path for Telegram handlers
-        import sys
-        import os
-        backend_path = os.path.join(os.path.dirname(__file__))
-        if backend_path not in sys.path:
-            sys.path.insert(0, backend_path)
-
-        from backend.services.drive_sync import upload_file
-
-        # Upload to Google Drive
-        result = upload_file(tmp)
-
-        if result:
-            progress_messages.append(await update.message.reply_text("✅ Google Drive 저장 완료! [100%]"))
-
-            file_id = result.get('id', 'N/A')
-            web_link = result.get('webViewLink', '')
-
-            # Send confirmation
-            confirm_text = (
-                f"✅ **{doc.file_name}** Google Drive에 자동 저장되었습니다!\n\n"
-                f"📋 파일 ID: `{file_id}`"
-            )
-            if web_link:
-                confirm_text += f"\n🔗 [드라이브에서 보기]({web_link})"
-
-            await reply_text(update, confirm_text)
-
-            # Analyze with Gemini if GEMINI is available
-            if GEMINI_API_KEY and gemini_model:
-                try:
-                    progress_messages.append(await update.message.reply_text("🧠 Gemini 문서 분석 중... [70%]"))
-
-                    # Extract text based on file type
-                    extracted_text = extract_text_from_file(tmp, doc.file_name)
-
-                    if extracted_text and len(extracted_text.strip()) > 0:
-                        prompt = f"다음 문서를 요약/분석해줘. 파일명: {doc.file_name}\n\n{extracted_text}"
-                        prompt += "\n\n항상 한국어로만 답변하고, Markdown 표/코드블록 없이 간결한 문장으로 답하세요."
-
-                        def _call_gemini_doc():
-                            resp = gemini_model.generate_content(prompt)
-                            return resp.text.strip()
-
-                        answer = await asyncio.to_thread(_call_gemini_doc)
-                        answer = format_plain(answer)
-
-                        analysis_text = f"\n\n📄 **문서 분석 결과**:\n\n{answer}"
-                        await reply_text(update, analysis_text)
-                    else:
-                        logger.warning(f"No text extracted from {doc.file_name}")
-
-                except Exception as e:
-                    logger.error(f"Document analysis error: {e}")
-                    # Don't fail the upload if analysis fails
-
-        else:
-            progress_messages.append(await update.message.reply_text("❌ 드라이브 저장 실패 [100%]"))
-            await reply_text(update, "❌ Google Drive 저장에 실패했어요. 권한을 확인해주세요.")
-
-    except Exception as e:
-        logger.error(f"Auto-save error: {e}")
-        await reply_text(update, f"자동 저장 중 오류가 발생했어요: {str(e)[:100]}")
-    finally:
-        try:
-            os.remove(tmp)
-        except Exception:
-            pass
-        await doc_indicator.__aexit__(None, None, None)
+    """Auto-save incoming documents to Google Drive and analyze them."""
+    return await drive_handlers.handle_document_auto_save(RUNTIME, update, context)
 
 
 def main():
