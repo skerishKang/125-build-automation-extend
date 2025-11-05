@@ -45,6 +45,100 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY_MAIN")
 REDIS_HOST = os.getenv("REDIS_HOST", "localhost")
 REDIS_PORT = int(os.getenv("REDIS_PORT", "6379"))
 
+
+def estimate_processing_time(task_type: str, file_info: Dict) -> int:
+    """Estimate processing time in seconds based on task type and file info."""
+    if task_type == "audio":
+        duration = file_info.get("duration", 60)
+        return int(duration * 2.5) + 30
+
+    if task_type == "document":
+        file_name = (file_info.get("file_name") or "").lower()
+        file_size = file_info.get("file_size", 0)
+
+        if file_name.endswith(".pdf"):
+            estimated_pages = (file_size / 1024 / 1024) * 20
+            return int(estimated_pages * 1.5) + 30
+        if file_name.endswith(".docx"):
+            return 60
+        if file_name.endswith(".txt"):
+            return 30
+        if file_name.endswith(".xlsx") or file_name.endswith(".csv"):
+            return 90
+        return 60
+
+    if task_type == "image":
+        return 30
+
+    return 60
+
+
+def format_duration(seconds: int) -> str:
+    """Format seconds into human-readable duration."""
+    if seconds < 60:
+        return f"{seconds}초"
+    minutes = seconds // 60
+    remaining_seconds = seconds % 60
+    if remaining_seconds > 0:
+        return f"{minutes}분 {remaining_seconds}초"
+    return f"{minutes}분"
+
+
+async def send_progress_updates(
+    bot: Bot,
+    chat_id: int,
+    task_type: str,
+    estimated_time: int,
+    cancel_event: asyncio.Event,
+) -> Optional[int]:
+    """Send progress updates every minute until the task completes."""
+    emoji_map = {"audio": "🎤", "document": "📄", "image": "🖼️"}
+    emoji = emoji_map.get(task_type, "⚙️")
+
+    initial_text = f"{emoji} 처리 중!\n⏱️ 예상 시간: ~{format_duration(estimated_time)}"
+    message = await bot.send_message(chat_id=chat_id, text=initial_text)
+    message_id = message.message_id
+
+    start_time = asyncio.get_event_loop().time()
+    update_interval = 60
+
+    while not cancel_event.is_set():
+        try:
+            await asyncio.wait_for(cancel_event.wait(), timeout=update_interval)
+            break
+        except asyncio.TimeoutError:
+            elapsed = int(asyncio.get_event_loop().time() - start_time)
+            if estimated_time > 0:
+                progress_percent = min(99, int((elapsed / estimated_time) * 100))
+                if progress_percent > 0:
+                    remaining = int((estimated_time * (100 - progress_percent)) / progress_percent)
+                else:
+                    remaining = estimated_time
+            else:
+                progress_percent = 50
+                remaining = 0
+
+            filled = int(progress_percent / 10)
+            bar = "█" * filled + "░" * (10 - filled)
+            progress_text = (
+                f"{emoji} 처리 중... {progress_percent}%\n"
+                f"{bar}\n"
+                f"⏱️ 경과: {format_duration(elapsed)}"
+            )
+            if remaining > 0:
+                progress_text += f" / 남은 시간: ~{format_duration(remaining)}"
+
+            try:
+                await bot.edit_message_text(
+                    chat_id=chat_id,
+                    message_id=message_id,
+                    text=progress_text,
+                )
+            except Exception as exc:
+                logger.warning("Failed to update progress message: %s", exc)
+
+    return message_id
+
 # Global state
 active_tasks: Dict[str, Dict] = {}  # chat_id -> task_info
 user_sessions: Dict[str, Dict] = {}  # user_id -> session_info
@@ -284,16 +378,41 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     logger.info(f"Sent document task to document bot for chat {chat_id}")
 
-    result_payload = await wait_for_result(chat_id, timeout=180)
+    estimated_time = estimate_processing_time("document", {
+        "file_name": file_name,
+        "file_size": file_size,
+    })
+
+    cancel_event = asyncio.Event()
+    progress_task = asyncio.create_task(
+        send_progress_updates(
+            context.bot,
+            int(chat_id),
+            "document",
+            estimated_time,
+            cancel_event,
+        )
+    )
+
+    result_payload = await wait_for_result(chat_id, timeout=1800)
+    cancel_event.set()
+
+    progress_message_id = await progress_task
+    if progress_message_id:
+        try:
+            await context.bot.delete_message(chat_id=int(chat_id), message_id=progress_message_id)
+        except Exception as exc:
+            logger.warning("Failed to delete progress message: %s", exc)
 
     if result_payload:
         await _process_result_payload(context.bot, result_payload)
     else:
         await context.bot.send_message(
             chat_id=int(chat_id),
-            text="⏰ 문서 처리가 예상보다 오래 걸려 중단되었어요. 다시 시도해주세요."
+            text="⏰ 문서 처리가 예상보다 오래 걸려 중단되었어요. 다시 시도해주세요.",
         )
-        active_tasks.pop(chat_id, None)
+
+    active_tasks.pop(chat_id, None)
 
 
 async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -352,16 +471,37 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     logger.info(f"Sent voice task to audio bot for chat {chat_id}")
 
-    result_payload = await wait_for_result(chat_id, timeout=180)
+    estimated_time = estimate_processing_time("audio", {"duration": duration})
+    cancel_event = asyncio.Event()
+    progress_task = asyncio.create_task(
+        send_progress_updates(
+            context.bot,
+            int(chat_id),
+            "audio",
+            estimated_time,
+            cancel_event,
+        )
+    )
+
+    result_payload = await wait_for_result(chat_id, timeout=1800)
+    cancel_event.set()
+
+    progress_message_id = await progress_task
+    if progress_message_id:
+        try:
+            await context.bot.delete_message(chat_id=int(chat_id), message_id=progress_message_id)
+        except Exception as exc:
+            logger.warning("Failed to delete progress message: %s", exc)
 
     if result_payload:
         await _process_result_payload(context.bot, result_payload)
     else:
         await context.bot.send_message(
             chat_id=int(chat_id),
-            text="⏰ 음성 처리가 예상보다 오래 걸려 중단되었어요. 다시 시도해주세요."
+            text="⏰ 음성 처리가 예상보다 오래 걸려 중단되었어요. 다시 시도해주세요.",
         )
-        active_tasks.pop(chat_id, None)
+
+    active_tasks.pop(chat_id, None)
 
 
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -400,16 +540,37 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     logger.info(f"Sent image task to image bot for chat {chat_id}")
 
-    result_payload = await wait_for_result(chat_id, timeout=120)
+    estimated_time = estimate_processing_time("image", {})
+    cancel_event = asyncio.Event()
+    progress_task = asyncio.create_task(
+        send_progress_updates(
+            context.bot,
+            int(chat_id),
+            "image",
+            estimated_time,
+            cancel_event,
+        )
+    )
+
+    result_payload = await wait_for_result(chat_id, timeout=1800)
+    cancel_event.set()
+
+    progress_message_id = await progress_task
+    if progress_message_id:
+        try:
+            await context.bot.delete_message(chat_id=int(chat_id), message_id=progress_message_id)
+        except Exception as exc:
+            logger.warning("Failed to delete progress message: %s", exc)
 
     if result_payload:
         await _process_result_payload(context.bot, result_payload)
     else:
         await context.bot.send_message(
             chat_id=int(chat_id),
-            text="⏰ 이미지 처리가 예상보다 오래 걸려 중단되었어요. 다시 시도해주세요."
+            text="⏰ 이미지 처리가 예상보다 오래 걸려 중단되었어요. 다시 시도해주세요.",
         )
-        active_tasks.pop(chat_id, None)
+
+    active_tasks.pop(chat_id, None)
 
 
 async def _process_result_payload(bot: Bot, payload: Dict[str, Any]):
