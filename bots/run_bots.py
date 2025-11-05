@@ -62,11 +62,16 @@ async def start_bot(bot_key: str, bot_info: dict):
     logger.info(f"Starting {bot_name}...")
 
     try:
+        # Set PYTHONPATH for subprocess
+        env = os.environ.copy()
+        env['PYTHONPATH'] = os.path.dirname(os.path.abspath(__file__))
+
         process = await asyncio.create_subprocess_exec(
             sys.executable, bot_script,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.STDOUT,
-            cwd=os.path.dirname(os.path.abspath(__file__))
+            cwd=os.path.dirname(os.path.abspath(__file__)),
+            env=env
         )
 
         running_bots[bot_key] = {
@@ -74,7 +79,7 @@ async def start_bot(bot_key: str, bot_info: dict):
             "info": bot_info
         }
 
-        logger.info(f"✅ {bot_name} started successfully (PID: {process.pid})")
+        logger.info(f"[OK] {bot_name} started successfully (PID: {process.pid})")
 
         # Read output
         while True:
@@ -88,16 +93,16 @@ async def start_bot(bot_key: str, bot_info: dict):
         # Wait for process to complete
         return_code = await process.wait()
         if return_code != 0:
-            logger.error(f"❌ {bot_name} exited with code {return_code}")
+            logger.error(f"[ERROR] {bot_name} exited with code {return_code}")
 
     except Exception as e:
-        logger.error(f"❌ Failed to start {bot_name}: {e}")
+        logger.error(f"[ERROR] Failed to start {bot_name}: {e}")
 
 
 async def start_all_bots():
     """Start all 4 bots concurrently"""
     print("\n" + "="*60)
-    print("🚀 4-BOT DISTRIBUTED SYSTEM")
+    print("4-BOT DISTRIBUTED SYSTEM")
     print("="*60 + "\n")
 
     print("Starting bots...\n")
@@ -112,14 +117,14 @@ async def start_all_bots():
         # Run all bots concurrently
         await asyncio.gather(*tasks)
     except KeyboardInterrupt:
-        logger.info("\n⏹️  Shutdown signal received")
+        logger.info("\n[SHUTDOWN] Signal received")
         await shutdown_bots()
 
 
 async def shutdown_bots():
     """Shutdown all running bots"""
     print("\n" + "="*60)
-    print("🛑 SHUTTING DOWN ALL BOTS")
+    print("SHUTTING DOWN ALL BOTS")
     print("="*60 + "\n")
 
     # Terminate all bots
@@ -133,14 +138,14 @@ async def shutdown_bots():
 
             try:
                 await asyncio.wait_for(process.wait(), timeout=5)
-                logger.info(f"✅ {bot_name} terminated gracefully")
+                logger.info(f"[OK] {bot_name} terminated gracefully")
             except asyncio.TimeoutError:
-                logger.warning(f"⚠️  {bot_name} didn't respond, killing...")
+                logger.warning(f"[WARNING] {bot_name} didn't respond, killing...")
                 process.kill()
                 await process.wait()
-                logger.info(f"✅ {bot_name} killed")
+                logger.info(f"[OK] {bot_name} killed")
 
-    print("\n👋 All bots stopped. Goodbye!\n")
+    print("\nAll bots stopped. Goodbye!\n")
 
 
 def signal_handler(signum, frame):
@@ -152,7 +157,7 @@ def signal_handler(signum, frame):
 async def main():
     """Main function"""
     print("\n" + "="*60)
-    print("🤖 4-BOT DISTRIBUTED SYSTEM")
+    print("4-BOT DISTRIBUTED SYSTEM")
     print("="*60 + "\n")
 
     # Check environment
@@ -172,7 +177,7 @@ async def main():
     missing_vars = [var for var in required_vars if not os.getenv(var)]
 
     if missing_vars:
-        print(f"❌ Missing required environment variables:")
+        print(f"[ERROR] Missing required environment variables:")
         for var in missing_vars:
             print(f"   - {var}")
         print(f"\nPlease set these in your .env file")
