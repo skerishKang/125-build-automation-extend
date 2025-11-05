@@ -290,13 +290,26 @@ async def listen_for_tasks():
         return
     pubsub.subscribe("document_tasks")
 
-    for message in pubsub.listen():
-        if message['type'] == 'message':
-            try:
-                data = json.loads(message['data'])
-                await process_document_task(data)
-            except Exception as e:
-                logger.error(f"Error processing task: {e}")
+    while True:
+        try:
+            message = await asyncio.to_thread(
+                pubsub.get_message,
+                ignore_subscribe_messages=True,
+                timeout=1.0,
+            )
+
+            if message and message.get('type') == 'message':
+                try:
+                    data = json.loads(message['data'])
+                    await process_document_task(data)
+                except Exception as e:
+                    logger.error(f"Error processing task: {e}")
+
+            await asyncio.sleep(0.1)
+
+        except Exception as e:
+            logger.error(f"Error in listen loop: {e}")
+            await asyncio.sleep(1.0)
 
 
 async def main():
