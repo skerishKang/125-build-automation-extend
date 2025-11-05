@@ -159,7 +159,13 @@ async def main():
     from dotenv import load_dotenv
     load_dotenv()
 
-    required_vars = ["MAIN_BOT_TOKEN", "GEMINI_API_KEY"]
+    required_vars = [
+        "MAIN_BOT_TOKEN",
+        "DOCUMENT_BOT_TOKEN",
+        "AUDIO_BOT_TOKEN",
+        "IMAGE_BOT_TOKEN",
+        "GEMINI_API_KEY"
+    ]
     missing_vars = [var for var in required_vars if not os.getenv(var)]
 
     if missing_vars:

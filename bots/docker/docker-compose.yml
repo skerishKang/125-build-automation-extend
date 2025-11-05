@@ -22,6 +22,9 @@ services:
       - redis
     environment:
       - MAIN_BOT_TOKEN=${MAIN_BOT_TOKEN}
+      - DOCUMENT_BOT_TOKEN=${DOCUMENT_BOT_TOKEN}
+      - AUDIO_BOT_TOKEN=${AUDIO_BOT_TOKEN}
+      - IMAGE_BOT_TOKEN=${IMAGE_BOT_TOKEN}
       - GEMINI_API_KEY=${GEMINI_API_KEY}
       - REDIS_HOST=redis
       - REDIS_PORT=6379
