@@ -179,7 +179,11 @@ async def listen_for_tasks():
     logger.info("Audio bot started, listening for tasks...")
 
     pubsub = messenger.pubsub
-    if not pubsub:        logger.info("[MOCK] Redis disabled - audio bot in standby mode")        while True:            await asyncio.sleep(60)        return
+    if not pubsub:
+        logger.info("[MOCK] Redis disabled - audio bot in standby mode")
+        while True:
+            await asyncio.sleep(60)
+        return
     pubsub.subscribe("audio_tasks")
 
     for message in pubsub.listen():

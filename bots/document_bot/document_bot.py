@@ -282,7 +282,11 @@ async def listen_for_tasks():
     logger.info("Document bot started, listening for tasks...")
 
     pubsub = messenger.pubsub
-    if not pubsub:        logger.info("[MOCK] Redis disabled - document bot in standby mode")        while True:            await asyncio.sleep(60)        return
+    if not pubsub:
+        logger.info("[MOCK] Redis disabled - document bot in standby mode")
+        while True:
+            await asyncio.sleep(60)
+        return
     pubsub.subscribe("document_tasks")
 
     for message in pubsub.listen():
