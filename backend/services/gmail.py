@@ -7,6 +7,7 @@ import json
 import base64
 import pickle
 import time
+import tempfile
 from datetime import datetime
 from typing import List, Dict, Optional, Any
 from email.mime.text import MIMEText
@@ -17,23 +18,23 @@ try:
     from google.oauth2.credentials import Credentials
     from google_auth_oauthlib.flow import InstalledAppFlow
     from google.auth.transport.requests import Request
+    from google.oauth2 import service_account
 except ImportError:
     logging.warning("Gmail API libraries not installed")
 
 logger = logging.getLogger("gmail_service")
 
 # Gmail API scopes
-SCOPES = [
-    'https://www.googleapis.com/auth/gmail.readonly',
-    'https://www.googleapis.com/auth/gmail.send',  # For sending emails
-    'https://www.googleapis.com/auth/calendar'
-]
+SCOPES = ['https://www.googleapis.com/auth/gmail.modify']
 
 # Token pickle file for OAuth2
-# 프로젝트 루트의 telegram-google.json 사용
-BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))  # 프로젝트 루트 (backend의 2단계 위)
-TOKEN_FILE = os.path.join(BASE_DIR, 'token.pickle')  # 프로젝트 루트에 토큰 저장
-CREDENTIALS_FILE = os.path.join(BASE_DIR, 'telegram-google.json')  # 프로젝트 루트의 credentials 사용
+TOKEN_FILE = os.path.join(tempfile.gettempdir(), 'gmail_token.pickle')
+DEFAULT_CREDENTIALS_FILE = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'gmail_credentials.json')
+DEFAULT_SERVICE_ACCOUNT_FILE = os.path.abspath(os.path.join(os.path.dirname(os.path.dirname(__file__)), '..', 'service_account.json'))
+
+GMAIL_SERVICE_ACCOUNT_FILE = os.getenv('GMAIL_SERVICE_ACCOUNT_FILE') or DEFAULT_SERVICE_ACCOUNT_FILE
+GMAIL_SERVICE_ACCOUNT_SUBJECT = os.getenv('GMAIL_SERVICE_ACCOUNT_SUBJECT') or os.getenv('GMAIL_IMPERSONATION_EMAIL')
+GMAIL_OAUTH_CLIENT_FILE = os.getenv('GMAIL_OAUTH_CLIENT_FILE') or DEFAULT_CREDENTIALS_FILE
 
 # Track processed emails
 PROCESSED_EMAILS_FILE = os.path.join(tempfile.gettempdir(), 'gmail_processed.json')
@@ -47,39 +48,66 @@ class GmailService:
 
     def authenticate(self):
         """Authenticate with Gmail API using OAuth2"""
+        # 1) Try service account credentials first (for background/daemon usage)
+        sa_path = GMAIL_SERVICE_ACCOUNT_FILE if GMAIL_SERVICE_ACCOUNT_FILE and os.path.exists(GMAIL_SERVICE_ACCOUNT_FILE) else None
+        if sa_path:
+            try:
+                creds = service_account.Credentials.from_service_account_file(sa_path, scopes=SCOPES)
+                if GMAIL_SERVICE_ACCOUNT_SUBJECT:
+                    creds = creds.with_subject(GMAIL_SERVICE_ACCOUNT_SUBJECT)
+                    logger.info("Gmail service account impersonation enabled for %s", GMAIL_SERVICE_ACCOUNT_SUBJECT)
+                else:
+                    logger.info("Gmail service account authentication without impersonation subject")
+
+                self.credentials = creds
+                self.service = build('gmail', 'v1', credentials=creds)
+                logger.info("Gmail authenticated via service account %s", os.path.basename(sa_path))
+                return True
+            except Exception as e:
+                logger.error(f"Service account authentication failed: {e}")
+                logger.info("Falling back to OAuth client credentials.")
+
         creds = None
 
-        # Load existing token
+        # 2) Fallback to OAuth client workflow (interactive)
         if os.path.exists(TOKEN_FILE):
-            with open(TOKEN_FILE, 'rb') as token:
-                creds = pickle.load(token)
+            try:
+                with open(TOKEN_FILE, 'rb') as token:
+                    creds = pickle.load(token)
+            except Exception as e:
+                logger.warning(f"Failed to load Gmail token cache: {e}. Re-authenticating.")
+                creds = None
 
-        # If no valid credentials, authenticate
-        if not creds or not creds.valid:
-            if creds and creds.expired and creds.refresh_token:
+        if creds and creds.expired and creds.refresh_token:
+            try:
                 creds.refresh(Request())
-            else:
-                if not os.path.exists(CREDENTIALS_FILE):
-                    logger.error(f"Gmail credentials file not found: {CREDENTIALS_FILE}")
-                    logger.info("To enable Gmail integration:")
-                    logger.info("1. Go to https://console.cloud.google.com/")
-                    logger.info("2. Create OAuth 2.0 credentials")
-                    logger.info("3. Download as gmail_credentials.json")
-                    logger.info("4. Place in backend directory")
-                    return False
+            except Exception as e:
+                logger.error(f"Failed to refresh Gmail token: {e}")
+                creds = None
 
-                flow = InstalledAppFlow.from_client_secrets_file(
-                    CREDENTIALS_FILE, SCOPES)
-                # 명시적으로 redirect URI 설정 (Desktop app용)
-                flow.redirect_uri = 'urn:ietf:wg:oauth:2.0:oob'
-                creds = flow.run_local_server(port=0)
+        if not creds:
+            if not os.path.exists(GMAIL_OAUTH_CLIENT_FILE):
+                logger.error(f"Gmail credentials file not found: {GMAIL_OAUTH_CLIENT_FILE}")
+                logger.info("To enable Gmail integration:")
+                logger.info("1. Go to https://console.cloud.google.com/")
+                logger.info("2. Create OAuth 2.0 credentials")
+                logger.info("3. Download JSON and set GMAIL_OAUTH_CLIENT_FILE or place gmail_credentials.json in backend directory")
+                return False
+
+            flow = InstalledAppFlow.from_client_secrets_file(
+                GMAIL_OAUTH_CLIENT_FILE, SCOPES)
+            creds = flow.run_local_server(port=0)
 
             # Save credentials for next run
-            with open(TOKEN_FILE, 'wb') as token:
-                pickle.dump(creds, token)
+            try:
+                with open(TOKEN_FILE, 'wb') as token:
+                    pickle.dump(creds, token)
+            except Exception as e:
+                logger.warning(f"Failed to cache Gmail token: {e}")
 
         self.credentials = creds
         self.service = build('gmail', 'v1', credentials=creds)
+        logger.info("Gmail authenticated via OAuth client credentials")
         return True
 
     def get_recent_emails(self, max_results: int = 10) -> List[Dict[str, Any]]:

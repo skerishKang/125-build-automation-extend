@@ -24,11 +24,21 @@ SUPABASE_KEY = os.getenv("SUPABASE_ANON_KEY")
 
 # logging
 os.makedirs("logs", exist_ok=True)
+# Use RotatingFileHandler for log rotation (max 5MB, keep 3 backups)
+from logging.handlers import RotatingFileHandler
+file_handler = RotatingFileHandler(
+    os.path.join("logs", "bot_runner.log"),
+    maxBytes=5_000_000,
+    backupCount=3,
+    encoding='utf-8'
+)
+file_handler.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
+
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.FileHandler(os.path.join("logs", "bot_runner.log")),
+        file_handler,
         logging.StreamHandler()
     ]
 )
@@ -72,392 +82,6 @@ if SUPABASE_URL and SUPABASE_KEY:
 # in-memory recent docs (fallback)
 recent_documents: Dict[int, List[Dict[str, Any]]] = {}
 
-# User patterns and learning system
-user_patterns: Dict[str, Dict[str, Any]] = {}
-user_modes: Dict[str, str] = {}  # 'beginner', 'advanced', 'hybrid'
-
-# Multi-turn conversation context
-conversation_contexts: Dict[str, Dict[str, Any]] = {}  # user_id -> context
-
-# Load user patterns from file
-def load_user_patterns():
-    """Load user patterns from file"""
-    global user_patterns
-    try:
-        if os.path.exists(USER_PATTERN_FILE):
-            with open(USER_PATTERN_FILE, 'r') as f:
-                user_patterns = json.load(f)
-    except Exception as e:
-        logger.warning(f"Failed to load user patterns: {e}")
-
-# Save user patterns to file
-def save_user_patterns():
-    """Save user patterns to file"""
-    try:
-        with open(USER_PATTERN_FILE, 'w') as f:
-            json.dump(user_patterns, f, indent=2)
-    except Exception as e:
-        logger.error(f"Failed to save user patterns: {e}")
-
-# Load user modes from file
-def load_user_modes():
-    """Load user modes from file"""
-    global user_modes
-    try:
-        if os.path.exists(USER_MODE_FILE):
-            with open(USER_MODE_FILE, 'r') as f:
-                user_modes = json.load(f)
-    except Exception as e:
-        logger.warning(f"Failed to load user modes: {e}")
-
-# Save user modes to file
-def save_user_modes():
-    """Save user modes to file"""
-    try:
-        with open(USER_MODE_FILE, 'w') as f:
-            json.dump(user_modes, f, indent=2)
-    except Exception as e:
-        logger.error(f"Failed to save user modes: {e}")
-
-# Load conversation contexts from file
-def load_conversation_contexts():
-    """Load conversation contexts from file"""
-    global conversation_contexts
-    try:
-        if os.path.exists(CONVERSATION_CONTEXT_FILE):
-            with open(CONVERSATION_CONTEXT_FILE, 'r') as f:
-                conversation_contexts = json.load(f)
-    except Exception as e:
-        logger.warning(f"Failed to load conversation contexts: {e}")
-
-# Save conversation contexts to file
-def save_conversation_contexts():
-    """Save conversation contexts to file"""
-    try:
-        with open(CONVERSATION_CONTEXT_FILE, 'w') as f:
-            json.dump(conversation_contexts, f, indent=2)
-    except Exception as e:
-        logger.error(f"Failed to save conversation contexts: {e}")
-
-# Initialize all user data on startup
-load_user_patterns()
-load_user_modes()
-load_conversation_contexts()
-
-
-# ========== Intent Analysis Engine ==========
-
-async def analyze_user_intent(message: str, user_id: str) -> Dict[str, Any]:
-    """Analyze user intent using Gemini AI"""
-    if not gemini_model:
-        return {
-            "action": "chat",
-            "confidence": 0.0,
-            "parameters": {},
-            "natural_response": "AI 분석 엔진이 비활성화되어 있어요."
-        }
-
-    try:
-        # Get user patterns
-        patterns = user_patterns.get(user_id, {})
-        
-        # Build analysis prompt
-        analysis_prompt = f"""
-사용자 메시지: "{message}"
-사용자 패턴: {json.dumps(patterns, ensure_ascii=False)}
-
-다음 JSON 형태로 의도를 분석해주세요:
-{{
-    "action": "실행할 액션명",
-    "parameters": {{"매개변수": "값"}},
-    "confidence": 0.95,
-    "natural_response": "자연어로 반응할 메시지",
-    "requires_confirmation": false,
-    "follow_up_question": "추가 질문이 필요한 경우"
-}}
-
-지원하는 액션들:
-- gmail_list: Gmail 메일 목록 보기 (parameters: {{"max_results": 10}})
-- gmail_on: Gmail 모니터링 시작
-- gmail_off: Gmail 모니터링 중지
-- cal_today: 오늘 일정 보기
-- cal_tomorrow: 내일 일정 보기
-- cal_week: 이번 주 일정 보기
-- cal_search: 일정 검색 (parameters: {{"query": "검색어"}})
-- cal_on: Calendar 모니터링 시작
-- cal_off: Calendar 모니터링 중지
-- drive_list: 드라이브 파일 목록
-- excel_extract: 엑셀 데이터 추출 (parameters: {{"sheet": "시트명"}})
-- summarize: 문서 요약
-- reply: 메일 답장 작성 (parameters: {{"email_id": "id"}})
-- chat: 일반 대화
-- excel_create: 엑셀 파일 생성
-
-패턴 인식 규칙:
-- "메일" + "확인/보기/체크" = gmail_list
-- "메일" + "답장/회신" = reply
-- "일정" + "오늘/오늘일정" = cal_today
-- "일정" + "내일/내일일정" = cal_tomorrow
-- "일정" + "이번주/주간" = cal_week
-- "일정" + "검색/찾기" = cal_search
-- "드라이브" + "목록/파일" = drive_list
-- "엑셀" + "요약/분석" = summarize
-- "답장" + "써줘/작성" = reply
-
-항상 한국어로만 답변하고, confidence는 0.0-1.0 사이의 실수로 설정해주세요.
-"""
-
-        response = gemini_model.generate_content(analysis_prompt)
-        
-        # Extract JSON from response
-        import re
-        json_match = re.search(r'\{.*\}', response.text, re.DOTALL)
-        if json_match:
-            result = json.loads(json_match.group())
-            
-            # Learn user pattern if confidence > 0.8
-            if result.get('confidence', 0) > 0.8 and result.get('action') != 'chat':
-                learn_user_pattern(user_id, message, result['action'])
-            
-            return result
-        else:
-            logger.warning(f"Failed to extract JSON from Gemini response: {response.text}")
-            return {
-                "action": "chat",
-                "confidence": 0.0,
-                "parameters": {},
-                "natural_response": "무슨 뜻인지 잘 이해하지 못했어요. 명령어를 사용해주세요!"
-            }
-
-    except Exception as e:
-        logger.error(f"Intent analysis error: {e}")
-        return {
-            "action": "chat",
-            "confidence": 0.0,
-            "parameters": {},
-            "natural_response": "AI 분석 중 오류가 발생했어요. 다시 시도해주세요."
-        }
-
-
-def learn_user_pattern(user_id: str, natural_text: str, action_taken: str):
-    """Learn user pattern for better intent recognition"""
-    global user_patterns
-    
-    if user_id not in user_patterns:
-        user_patterns[user_id] = {
-            "gmail_patterns": [],
-            "calendar_patterns": [],
-            "drive_patterns": [],
-            "excel_patterns": [],
-            "chat_patterns": [],
-            "learned_count": 0
-        }
-    
-    # Determine pattern category based on action
-    category = "chat_patterns"
-    if action_taken.startswith("gmail_"):
-        category = "gmail_patterns"
-    elif action_taken.startswith("cal_"):
-        category = "calendar_patterns"
-    elif action_taken.startswith("drive"):
-        category = "drive_patterns"
-    elif action_taken.startswith("excel_"):
-        category = "excel_patterns"
-    
-    # Add pattern if not already exists
-    patterns = user_patterns[user_id][category]
-    if natural_text not in patterns:
-        patterns.append(natural_text)
-        user_patterns[user_id]["learned_count"] = user_patterns[user_id].get("learned_count", 0) + 1
-        
-        # Save to file
-        save_user_patterns()
-        
-        logger.info(f"Learned pattern for user {user_id}: {natural_text} -> {action_taken}")
-
-
-async def execute_action(update: Update, intent: Dict[str, Any], context: ContextTypes.DEFAULT_TYPE):
-    """Execute action based on intent"""
-    action = intent.get('action')
-    parameters = intent.get('parameters', {})
-    
-    try:
-        if action == 'gmail_list':
-            await handle_gmail_list(update, context)
-        elif action == 'gmail_on':
-            await handle_gmail_on(update, context)
-        elif action == 'gmail_off':
-            await handle_gmail_off(update, context)
-        elif action == 'cal_today':
-            await handle_cal_today(update, context)
-        elif action == 'cal_tomorrow':
-            await handle_cal_tomorrow(update, context)
-        elif action == 'cal_week':
-            await handle_cal_week(update, context)
-        elif action == 'cal_search':
-            query = parameters.get('query', '')
-            if query:
-                # Simulate command with arguments
-                context.args = query.split()
-                await handle_cal_search(update, context)
-        elif action == 'cal_on':
-            await handle_cal_on(update, context)
-        elif action == 'cal_off':
-            await handle_cal_off(update, context)
-        elif action == 'drive_list':
-            await handle_drive_list(update, context)
-        elif action == 'reply':
-            # For now, just acknowledge
-            await reply_text(update, "✏️ 메일 답장 기능을 실행할게요. 어떤 메일에 답장할지 알려주세요!")
-        elif action == 'summarize':
-            await reply_text(update, "📄 문서 요약 기능을 실행할게요! 파일을 업로드해주세요!")
-        else:
-            await handle_text(update, context)  # Fallback to general chat
-
-    except Exception as e:
-        logger.error(f"Action execution error: {e}")
-        await reply_text(update, f"실행 중 오류가 발생했어요: {str(e)[:100]}")
-
-
-async def confirm_and_execute(update: Update, intent: Dict[str, Any], context: ContextTypes.DEFAULT_TYPE):
-    """Confirm with user before executing ambiguous intent"""
-    natural_response = intent.get('natural_response', '이렇게 이해하면 될까요?')
-    action = intent.get('action')
-    confidence = intent.get('confidence', 0.5)
-    
-    # Build confirmation message
-    action_names = {
-        'gmail_list': '📧 Gmail 메일 확인하기',
-        'cal_today': '📅 오늘 일정 확인하기',
-        'cal_tomorrow': '📅 내일 일정 확인하기',
-        'cal_week': '📅 이번 주 일정 확인하기',
-        'drive_list': '📁 드라이브 파일 목록 보기'
-    }
-    
-    action_name = action_names.get(action, action)
-    
-    confirm_text = f"""
-🤔 **이렇게 이해해도 될까요?**
-
-{natural_response}
-
-→ **{action_name}** 실행
-
-💡 아니면 다른 뜻이었나요?
-    """.strip()
-    
-    # Store context for follow-up
-    user_id = str(update.effective_user.id)
-    conversation_contexts[user_id] = {
-        'pending_intent': intent,
-        'timestamp': datetime.now().isoformat()
-    }
-    save_conversation_contexts()
-    
-    # Add inline keyboard with Yes/No buttons
-    from telegram import InlineKeyboardButton, InlineKeyboardMarkup
-    
-    keyboard = [
-        [
-            InlineKeyboardButton("✅ 맞음", callback_data="intent_yes"),
-            InlineKeyboardButton("❌ 아님", callback_data="intent_no")
-        ]
-    ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    
-    await context.bot.send_message(
-        chat_id=update.effective_chat.id,
-        text=confirm_text,
-        reply_markup=reply_markup
-    )
-
-
-async def suggest_smart_actions(file_type: str, file_name: str) -> str:
-    """Suggest smart actions based on file type"""
-    if file_type in ['.xlsx', '.xls']:
-        suggestions = [
-            "💡 데이터 요약 생성하기",
-            "💡 차트 자동 만들기",
-            "💡 특정 데이터 추출하기",
-            "💡 다른 형태로 변환하기"
-        ]
-    elif file_type == '.pdf':
-        suggestions = [
-            "💡 문서 요약하기",
-            "💡 주요 내용 추출하기",
-            "💡 번역하기",
-            "💡 Word로 변환하기"
-        ]
-    elif file_type in ['.txt', '.md', '.py', '.js']:
-        suggestions = [
-            "💡 코드 분석하기",
-            "💡 최적화 제안 받기",
-            "💡 문서화 자동 생성"
-        ]
-    elif file_type in ['.png', '.jpg', '.jpeg']:
-        suggestions = [
-            "💡 이미지 설명받기",
-            "💡 텍스트 추출하기 (OCR)",
-            "💡 이미지 개선하기"
-        ]
-    else:
-        suggestions = [
-            "💡 내용 요약하기",
-            "💡 형식 분석하기"
-        ]
-    
-    return f"📁 **{file_name}**을 받았어요!\n\n" + "\n".join(suggestions)
-
-
-# ========== Enhanced Multi-turn Conversation ==========
-
-async def handle_follow_up_response(update: Update, context: ContextTypes.DEFAULT_TYPE, user_id: str):
-    """Handle follow-up responses in multi-turn conversation"""
-    if user_id not in conversation_contexts:
-        await reply_text(update, "대화 맥락을 찾을 수 없어요. 다시 시작해주세요!")
-        return
-    
-    context_data = conversation_contexts[user_id]
-    pending_intent = context_data.get('pending_intent')
-    
-    if not pending_intent:
-        await reply_text(update, "대화 맥락을 찾을 수 없어요. 다시 시작해주세요!")
-        return
-    
-    # Execute the pending action
-    await execute_action(update, pending_intent, context)
-    
-    # Clear context
-    del conversation_contexts[user_id]
-    save_conversation_contexts()
-
-
-# Inline keyboard callback handler (add to main handler)
-async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle inline keyboard callbacks"""
-    query = update.callback_query
-    await query.answer()
-
-    user_id = str(query.from_user.id)
-    data = query.data
-
-    # Handle intent confirmation callbacks
-    if data == "intent_yes":
-        if user_id in conversation_contexts and 'pending_intent' in conversation_contexts[user_id]:
-            pending_intent = conversation_contexts[user_id]['pending_intent']
-            await execute_action(update, pending_intent, context)
-            del conversation_contexts[user_id]
-            save_conversation_contexts()
-    elif data == "intent_no":
-        await query.edit_message_text("😔 아, 실수했네요! 다시 말해주세요!")
-        if user_id in conversation_contexts:
-            del conversation_contexts[user_id]
-            save_conversation_contexts()
-
-    # Handle reply-related callbacks
-    elif data.startswith("send_reply_") or data.startswith("edit_reply_") or data.startswith("regenerate_reply_") or data == "cancel_reply":
-        await handle_reply_callback(update, context)
-
 # Smart audio processing configuration
 SHORT_AUDIO_THRESHOLD = int(os.getenv("SHORT_AUDIO_THRESHOLD", "30"))  # 30초 이하
 LONG_AUDIO_THRESHOLD = int(os.getenv("LONG_AUDIO_THRESHOLD", "300"))  # 5분 이상
@@ -466,21 +90,6 @@ MID_LENGTH_MODEL = os.getenv("MID_LENGTH_AUDIO", "gemini")  # 30초-5분 기본
 # Drive monitoring configuration
 DRIVE_MONITOR_INTERVAL = int(os.getenv("DRIVE_MONITOR_INTERVAL", "300"))  # 5분 (300초)
 ENABLE_DRIVE_MONITORING = os.getenv("ENABLE_DRIVE_MONITORING", "true").lower() == "true"
-
-# Gmail monitoring configuration
-GMAIL_MONITOR_INTERVAL = int(os.getenv("GMAIL_MONITOR_INTERVAL", "300"))  # 기본 5분 간격
-
-# Usage telemetry counters
-usage_metrics = {
-    "text_messages": 0,
-    "documents_saved": 0,
-    "photos_processed": 0,
-    "voices_processed": 0,
-    "drive_sync_runs": 0,
-    "drive_downloads": 0,
-    "gmail_notifications": 0,
-    "calendar_alerts_sent": 0
-}
 
 # Global application instance for Drive monitoring
 _app_instance = None
@@ -491,10 +100,7 @@ drive_monitoring_state = {
     "thread": None,
     "last_check": None,
     "total_files": 0,
-    "start_time": None,
-    "interval": DRIVE_MONITOR_INTERVAL,
-    "recent_changes": deque(maxlen=20),
-    "last_manual_sync": None
+    "start_time": None
 }
 
 # Gmail monitoring state control
@@ -503,10 +109,7 @@ gmail_monitoring_state = {
     "thread": None,
     "last_check": None,
     "total_emails": 0,
-    "start_time": None,
-    "interval": GMAIL_MONITOR_INTERVAL,
-    "auth_mode": "unknown",
-    "recent_emails": deque(maxlen=50)
+    "start_time": None
 }
 
 # Calendar monitoring state control
@@ -665,104 +268,12 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not text or text.startswith('/'):
         return
 
-    user_id = str(update.effective_user.id)
-    username = update.effective_user.first_name or "사용자"
-
-    # Check if this is a reply editing mode
-    if user_id in conversation_contexts and conversation_contexts[user_id].get('editing_reply'):
-        # Handle reply editing
-        await handle_reply_edit(update, context, text)
-        return
-
-    # Check if this is a follow-up response
-    if user_id in conversation_contexts:
-        await handle_follow_up_response(update, context, user_id)
-        return
-
-    # Get user mode (hybrid by default)
-    user_mode = user_modes.get(user_id, 'hybrid')
-
-    # If mode is advanced, only process with Gemini (no intent analysis)
-    if user_mode == 'advanced':
-        await handle_text_advanced(update, context, text, user_id, username)
-        return
-
-    # For hybrid and beginner modes, use intent analysis
-    # Analyze user intent
-    intent = await analyze_user_intent(text, user_id)
-
-    confidence = intent.get('confidence', 0.0)
-    action = intent.get('action', 'chat')
-
-    # If high confidence and it's not just chat, execute directly
-    if confidence > 0.8 and action != 'chat':
-        natural_response = intent.get('natural_response', f'{action} 실행할게요!')
-        await reply_text(update, natural_response)
-        await execute_action(update, intent, context)
-
-        # Save to memory
-        await save_memory(user_id, username, text, natural_response)
-
-    # If medium confidence, ask for confirmation
-    elif confidence > 0.5:
-        await confirm_and_execute(update, intent, context)
-
-    # Low confidence or just chat, use Gemini
-    else:
-        await handle_text_advanced(update, context, text, user_id, username)
-
-
-async def handle_reply_edit(update: Update, context: ContextTypes.DEFAULT_TYPE, new_text: str):
-    """Handle reply editing mode"""
-    user_id = str(update.effective_user.id)
-
-    if user_id not in conversation_contexts:
-        await reply_text(update, "❌ 대화 맥락을 찾을 수 없습니다.")
-        return
-
-    # Get pending reply
-    if 'pending_reply' not in conversation_contexts[user_id]:
-        await reply_text(update, "❌ 답장 정보를 찾을 수 없습니다.")
-        return
-
-    # Update reply draft
-    conversation_contexts[user_id]['pending_reply']['draft'] = new_text
-    conversation_contexts[user_id]['editing_reply'] = False
-    save_conversation_contexts()
-
-    # Show updated reply with buttons
-    reply_data = conversation_contexts[user_id]['pending_reply']
-
-    final_message = f"""
-✏️ **수정된 답장**:
-
-{reply_data['draft']}
-
-어떻게 하시겠어요?
-    """.strip()
-
-    from telegram import InlineKeyboardButton, InlineKeyboardMarkup
-
-    keyboard = [
-        [
-            InlineKeyboardButton("📤 바로 보내기", callback_data=f"send_reply_{reply_data['email_id']}"),
-            InlineKeyboardButton("✏️ 다시 수정", callback_data=f"edit_reply_{reply_data['email_id']}")
-        ],
-        [
-            InlineKeyboardButton("🔄 다른 톤으로", callback_data=f"regenerate_reply_{reply_data['email_id']}"),
-            InlineKeyboardButton("❌ 취소", callback_data="cancel_reply")
-        ]
-    ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-
-    await reply_text(update, final_message, reply_markup=reply_markup)
-
-
-async def handle_text_advanced(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str, user_id: str, username: str):
-    """Handle text with Gemini AI (for advanced mode or low confidence intent)"""
     if not GEMINI_API_KEY or not gemini_model:
         await reply_text(update, "Gemini 설정이 없어 대화가 비활성화되어 있어요.")
         return
+
+    user_id = str(update.effective_user.id)
+    username = update.effective_user.first_name or "사용자"
 
     # Fetch memory and build context
     memory = await fetch_memory(user_id)
@@ -1048,54 +559,6 @@ async def handle_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     lines = [f"{i+1}. {d['file_name']} ({d['text_length']}자)" for i, d in enumerate(docs)]
     await reply_text(update, "최근 문서 목록:\n" + "\n".join(lines))
-
-
-async def handle_mode(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle /mode command - Switch user interaction mode"""
-    args = context.args
-    
-    if not args:
-        current_mode = user_modes.get(str(update.effective_user.id), 'hybrid')
-        mode_names = {
-            'beginner': '🔰 초보자 (자연어 우선)',
-            'advanced': '⚡ 파워유저 (명령어 우선)',
-            'hybrid': '🎭 하이브리드 (자연어 + 명령어)'
-        }
-        mode_name = mode_names.get(current_mode, 'unknown')
-        
-        await reply_text(update,
-            f"📋 **현재 모드**: {mode_name}\n\n"
-            "🎯 **모드 변경**:\n"
-            "/mode beginner → 초보자 모드 (자연어 + 상세 설명)\n"
-            "/mode advanced → 파워유저 모드 (명령어 + 간결한 응답)\n"
-            "/mode hybrid → 하이브리드 모드 (자연어 파악 + 명령어 제안) [기본]\n\n"
-            "💡 **예시**:\n"
-            "초보자: '메일 확인해줘' → 상세한 응답\n"
-            "파워유저: '/gmail_list' → 간결한 응답\n"
-            "하이브리드: '메일 확인' → 실행 + 명령어 제안"
-        )
-        return
-    
-    mode = args[0].lower()
-    if mode not in ['beginner', 'advanced', 'hybrid']:
-        await reply_text(update, "❌ 올바른 모드를 선택해주세요: beginner, advanced, hybrid")
-        return
-    
-    user_id = str(update.effective_user.id)
-    user_modes[user_id] = mode
-    save_user_modes()
-    
-    mode_names = {
-        'beginner': '🔰 초보자 모드',
-        'advanced': '⚡ 파워유저 모드',
-        'hybrid': '🎭 하이브리드 모드'
-    }
-    
-    await reply_text(update,
-        f"✅ **모드가 변경되었습니다!**\n"
-        f"→ {mode_names[mode]}\n\n"
-        f"이제 '{args[0]}' 스타일로 대화할 수 있어요!"
-    )
 
 
 # ========== Google Drive Sync Handlers ==========
@@ -1513,308 +976,6 @@ async def handle_gmail_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
 
-# ========== Gmail Reply Handlers ==========
-
-async def handle_gmail_reply(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle /gmail_reply command - Generate AI-powered reply"""
-    args = context.args
-
-    if not args:
-        await reply_text(update,
-            "📧 **Gmail 답장 생성**\n\n"
-            "사용법:\n"
-            "• `/gmail_reply <메일ID>` - 특정 메일에 답장\n"
-            "• `/gmail_recent` - 최근 메일 목록에서 선택\n\n"
-            "예: `/gmail_reply 1a2b3c4d5e6f`\n"
-            "   (메일ID는 `/gmail_list`에서 확인 가능)"
-        )
-        return
-
-    email_id = args[0]
-    ack_msg = await reply_text(update, "📧 메일을 분석하고 답장 초안을 생성 중...")
-
-    try:
-        from backend.services.gmail_reply import GmailReplyGenerator
-
-        reply_generator = GmailReplyGenerator()
-        if not reply_generator.authenticate():
-            await context.bot.edit_message_text(
-                chat_id=update.effective_chat.id,
-                message_id=ack_msg.message_id,
-                text="❌ Gmail 인증 실패. gmail_credentials.json 파일을 확인해주세요."
-            )
-            return
-
-        # Get email content
-        await context.bot.edit_message_text(
-            chat_id=update.effective_chat.id,
-            message_id=ack_msg.message_id,
-            text="📧 메일 내용 조회 중... [30%]"
-        )
-
-        email_content = reply_generator.get_email_content(email_id)
-        if not email_content:
-            await context.bot.edit_message_text(
-                chat_id=update.effective_chat.id,
-                message_id=ack_msg.message_id,
-                text="❌ 메일을 찾을 수 없습니다. 메일 ID를 확인해주세요."
-            )
-            return
-
-        # Generate reply draft
-        await context.bot.edit_message_text(
-            chat_id=update.effective_chat.id,
-            message_id=ack_msg.message_id,
-            text="✏️ AI가 답장 초안을 작성 중... [70%]"
-        )
-
-        reply_draft = reply_generator.generate_reply_draft(email_content, tone="professional")
-
-        if reply_draft:
-            # Store reply data for callback
-            reply_data = {
-                'draft': reply_draft['draft'],
-                'tone': reply_draft['tone'],
-                'original_subject': reply_draft['original_subject'],
-                'original_sender': reply_draft['original_sender'],
-                'thread_id': reply_draft['thread_id'],
-                'email_id': email_id
-            }
-
-            # Save to conversation context
-            user_id = str(update.effective_user.id)
-            conversation_contexts[user_id] = {
-                'pending_reply': reply_data,
-                'timestamp': datetime.now().isoformat()
-            }
-            save_conversation_contexts()
-
-            # Show reply draft
-            final_message = f"""
-📧 **답장 초안 완성!**
-
-**받은 메일:**
-👤 {email_content['sender'][:50]}
-📋 {email_content['subject'][:60]}
-
-**답장 초안:**
-✏️ {reply_draft['draft']}
-
-어떻게 하시겠어요?
-            """.strip()
-
-            from telegram import InlineKeyboardButton, InlineKeyboardMarkup
-
-            keyboard = [
-                [
-                    InlineKeyboardButton("📤 바로 보내기", callback_data=f"send_reply_{email_id}"),
-                    InlineKeyboardButton("✏️ 수정하기", callback_data=f"edit_reply_{email_id}")
-                ],
-                [
-                    InlineKeyboardButton("🔄 다른 톤으로", callback_data=f"regenerate_reply_{email_id}"),
-                    InlineKeyboardButton("❌ 취소", callback_data="cancel_reply")
-                ]
-            ]
-            reply_markup = InlineKeyboardMarkup(keyboard)
-
-            await context.bot.edit_message_text(
-                chat_id=update.effective_chat.id,
-                message_id=ack_msg.message_id,
-                text=final_message,
-                reply_markup=reply_markup
-            )
-
-        else:
-            await context.bot.edit_message_text(
-                chat_id=update.effective_chat.id,
-                message_id=ack_msg.message_id,
-                text="❌ 답장 생성에 실패했습니다. 다시 시도해주세요."
-            )
-
-    except Exception as e:
-        logger.error(f"Gmail reply error: {e}")
-        await context.bot.edit_message_text(
-            chat_id=update.effective_chat.id,
-            message_id=ack_msg.message_id,
-            text=f"❌ 오류가 발생했습니다: {str(e)[:100]}"
-        )
-
-
-async def handle_gmail_recent(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle /gmail_recent command - Show recent emails for quick reply"""
-    ack_msg = await reply_text(update, "📧 최근 메일 목록 가져오는 중...")
-
-    try:
-        from backend.services.gmail_reply import GmailReplyGenerator
-
-        reply_generator = GmailReplyGenerator()
-        if not reply_generator.authenticate():
-            await context.bot.edit_message_text(
-                chat_id=update.effective_chat.id,
-                message_id=ack_msg.message_id,
-                text="❌ Gmail 인증 실패. gmail_credentials.json 파일을 확인해주세요."
-            )
-            return
-
-        recent_emails = reply_generator.find_recent_emails(max_results=10)
-
-        if not recent_emails:
-            await context.bot.edit_message_text(
-                chat_id=update.effective_chat.id,
-                message_id=ack_msg.message_id,
-                text="📪 읽지 않은 메일이 없어요."
-            )
-            return
-
-        # Get email contents
-        email_list = []
-        for i, email_info in enumerate(recent_emails[:5]):  # Max 5
-            email_content = reply_generator.get_email_content(email_info['id'])
-            if email_content:
-                sender_name = email_content['sender'].split('<')[0].strip() if '<' in email_content['sender'] else email_content['sender']
-                email_list.append(
-                    f"{i+1}. 📧 **{email_content['subject'][:40]}**\n"
-                    f"   👤 {sender_name[:30]} | ID: `{email_info['id'][:12]}`"
-                )
-
-        final_message = f"""
-📋 **최근 메일 목록** (최대 5개)
-
-{chr(10).join(email_list)}
-
-💡 **답장 방법**: `/gmail_reply <메일ID>`
-📝 예시: `/gmail_reply {recent_emails[0]['id'][:12]}`
-        """.strip()
-
-        await context.bot.edit_message_text(
-            chat_id=update.effective_chat.id,
-            message_id=ack_msg.message_id,
-            text=final_message
-        )
-
-    except Exception as e:
-        logger.error(f"Gmail recent error: {e}")
-        await context.bot.edit_message_text(
-            chat_id=update.effective_chat.id,
-            message_id=ack_msg.message_id,
-            text=f"❌ 오류가 발생했습니다: {str(e)[:100]}"
-        )
-
-
-async def handle_reply_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle reply-related inline keyboard callbacks"""
-    query = update.callback_query
-    data = query.data
-    user_id = str(query.from_user.id)
-
-    await query.answer()
-
-    try:
-        if data == "cancel_reply":
-            if user_id in conversation_contexts:
-                del conversation_contexts[user_id]
-                save_conversation_contexts()
-            await query.edit_message_text("❌ 답장 작성이 취소되었습니다.")
-            return
-
-        # Extract email ID from callback data
-        email_id = data.split('_')[-1]
-
-        # Get pending reply from context
-        if user_id not in conversation_contexts or 'pending_reply' not in conversation_contexts[user_id]:
-            await query.edit_message_text("❌ 답장 정보를 찾을 수 없습니다. 다시 시도해주세요.")
-            return
-
-        reply_data = conversation_contexts[user_id]['pending_reply']
-
-        if data.startswith("send_reply_"):
-            await query.edit_message_text("📤 답장을 보내는 중...")
-
-            from backend.services.gmail_reply import GmailReplyGenerator
-            reply_generator = GmailReplyGenerator()
-            reply_generator.authenticate()
-
-            result = reply_generator.send_reply_email(reply_data)
-
-            if result:
-                await query.edit_message_text("✅ 답장을 성공적으로 보냈습니다!")
-                # Mark email as read
-                reply_generator.mark_as_read(email_id)
-            else:
-                await query.edit_message_text("❌ 답장 전송에 실패했습니다.")
-
-            # Clear context
-            del conversation_contexts[user_id]
-            save_conversation_contexts()
-
-        elif data.startswith("edit_reply_"):
-            await query.edit_message_text(
-                "✏️ 수정하실 내용을 다음 메시지로 보내주세요.\n"
-                "기존 답장:\n"
-                f"{reply_data['draft']}"
-            )
-
-            # Store editing state
-            conversation_contexts[user_id]['editing_reply'] = True
-            save_conversation_contexts()
-
-        elif data.startswith("regenerate_reply_"):
-            await query.edit_message_text("🔄 다른 톤으로 답장을 다시 작성 중...")
-
-            # Regenerate with different tone
-            from backend.services.gmail_reply import GmailReplyGenerator
-            reply_generator = GmailReplyGenerator()
-            reply_generator.authenticate()
-
-            # Get email content again
-            email_content = reply_generator.get_email_content(email_id)
-            if email_content:
-                # Try different tone
-                tones = ["friendly", "concise", "professional"]
-                current_tone = reply_data.get('tone', 'professional')
-                next_tone = tones[(tones.index(current_tone) + 1) % len(tones)]
-
-                new_draft = reply_generator.generate_reply_draft(email_content, tone=next_tone)
-                if new_draft:
-                    # Update reply data
-                    reply_data['draft'] = new_draft['draft']
-                    reply_data['tone'] = new_draft['tone']
-                    conversation_contexts[user_id]['pending_reply'] = reply_data
-                    save_conversation_contexts()
-
-                    # Show new draft
-                    final_message = f"""
-📧 **새 답장 초안** ({next_tone} 톤)
-
-✏️ {new_draft['draft']}
-
-어떻게 하시겠어요?
-                    """.strip()
-
-                    from telegram import InlineKeyboardButton, InlineKeyboardMarkup
-
-                    keyboard = [
-                        [
-                            InlineKeyboardButton("📤 바로 보내기", callback_data=f"send_reply_{email_id}"),
-                            InlineKeyboardButton("✏️ 수정하기", callback_data=f"edit_reply_{email_id}")
-                        ],
-                        [
-                            InlineKeyboardButton("🔄 다른 톤으로", callback_data=f"regenerate_reply_{email_id}"),
-                            InlineKeyboardButton("❌ 취소", callback_data="cancel_reply")
-                        ]
-                    ]
-                    reply_markup = InlineKeyboardMarkup(keyboard)
-
-                    await query.edit_message_text(
-                        text=final_message,
-                        reply_markup=reply_markup
-                    )
-
-    except Exception as e:
-        logger.error(f"Reply callback error: {e}")
-        await query.edit_message_text(f"❌ 오류가 발생했습니다: {str(e)[:100]}")
-
-
 # ========== Gmail Monitoring Functions ==========
 
 def start_gmail_monitoring():
@@ -1844,22 +1005,19 @@ def gmail_monitor_loop():
             return
 
         logger.info("📧 Gmail monitoring worker started")
-        gmail_monitoring_state["enabled"] = True
-        gmail_monitoring_state["auth_mode"] = getattr(gmail_service, "auth_mode", "unknown")
-        gmail_monitoring_state["interval"] = GMAIL_MONITOR_INTERVAL
-        if not gmail_monitoring_state.get("start_time"):
-            gmail_monitoring_state["start_time"] = datetime.now().isoformat()
 
-        while gmail_monitoring_state.get("enabled", True):
+        while gmail_monitoring_state["enabled"]:
             try:
                 logger.info("📧 Checking for new emails...")
 
+                # Get recent emails
                 recent_emails = gmail_service.get_recent_emails(max_results=20)
                 new_emails = []
 
                 for email_info in recent_emails:
                     email_id = email_info['id']
 
+                    # Check if already processed
                     if email_id not in gmail_service.processed_emails:
                         email_content = gmail_service.get_email_content(email_id)
                         if email_content:
@@ -1870,42 +1028,35 @@ def gmail_monitor_loop():
                             except Exception as mark_err:
                                 logger.warning(f"Failed to mark email as read ({email_id}): {mark_err}")
 
+                # Process new emails
                 if new_emails:
                     logger.info(f"📧 Found {len(new_emails)} new emails")
                     gmail_monitoring_state["total_emails"] += len(new_emails)
 
                     for email_data in new_emails:
-                        gmail_monitoring_state["recent_emails"].appendleft({
-                            "subject": email_data.get('subject', '')[:120],
-                            "sender": email_data.get('sender', '')[:120],
-                            "date": email_data.get('date', ''),
-                            "processed_at": datetime.utcnow().isoformat() + 'Z'
-                        })
-                        usage_metrics["gmail_notifications"] += 1
                         asyncio.run_coroutine_threadsafe(
                             process_and_send_email(email_data),
                             asyncio.get_event_loop()
                         )
 
+                # Save processed emails
                 gmail_service.save_processed_emails()
-                gmail_monitoring_state["last_check"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                gmail_monitoring_state["last_check"] = datetime.now().strftime("%H:%M:%S")
 
-                interval = max(30, gmail_monitoring_state.get("interval", GMAIL_MONITOR_INTERVAL))
-                for _ in range(interval):
-                    if not gmail_monitoring_state.get("enabled", True):
+                # Wait 5 minutes
+                for _ in range(300):  # Check every second for shutdown
+                    if not gmail_monitoring_state["enabled"]:
                         break
                     time.sleep(1)
 
             except Exception as e:
                 logger.error(f"Gmail monitoring error: {e}")
-                time.sleep(60)
+                time.sleep(60)  # Wait 1 minute on error
 
         logger.info("📧 Gmail monitoring worker stopped")
 
     except Exception as e:
         logger.error(f"Gmail monitoring loop error: {e}")
-    finally:
-        gmail_monitoring_state["enabled"] = False
 
 
 async def process_and_send_email(email_data):
@@ -2402,12 +1553,7 @@ async def monitor_drive_changes():
     if backend_path not in sys.path:
         sys.path.insert(0, backend_path)
 
-    drive_monitoring_state["enabled"] = True
-    if not drive_monitoring_state.get("start_time"):
-        drive_monitoring_state["start_time"] = datetime.now().isoformat()
-    drive_monitoring_state["interval"] = DRIVE_MONITOR_INTERVAL
-
-    while drive_monitoring_state.get("enabled", True):
+    while True:
         try:
             if not ENABLE_DRIVE_MONITORING:
                 await asyncio.sleep(60)
@@ -2418,30 +1564,46 @@ async def monitor_drive_changes():
                 cache_current_files, load_cached_files
             )
 
+            # Get current files
             current_files = get_folder_files()
-            drive_monitoring_state["total_files"] = len(current_files)
-            drive_monitoring_state["last_check"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
+            # Check for deleted files
             deleted_files = check_deleted_files(current_files)
+
+            # Check for new files
             new_files = check_new_files()
 
-            if new_files or deleted_files:
-                summary_parts = []
+            # Broadcast notifications if there are changes
+            if (new_files or deleted_files) and _app_instance:
+                message_parts = []
+
                 if new_files:
-                    summary_parts.append(f"🆕 새 파일 {len(new_files)}개")
+                    message_parts.append(f"🆕 **새로 올라온 파일** ({len(new_files)}개):")
+                    for file in new_files[:5]:  # Show max 5 files
+                        file_type = "📁 폴더" if file.get('mimeType') == 'application/vnd.google-apps.folder' else "📄"
+                        message_parts.append(f"• {file_type}: {file['name']}")
+                    if len(new_files) > 5:
+                        message_parts.append(f"... 외 {len(new_files) - 5}개")
+                    message_parts.append("")
+
                 if deleted_files:
-                    summary_parts.append(f"🗑️ 삭제 {len(deleted_files)}개")
-                summary = ", ".join(summary_parts) if summary_parts else "변경 없음"
+                    message_parts.append(f"🗑️ **삭제된 파일** ({len(deleted_files)}개):")
+                    for file in deleted_files[:5]:  # Show max 5 files
+                        message_parts.append(f"• {file['name']}")
+                    if len(deleted_files) > 5:
+                        message_parts.append(f"... 외 {len(deleted_files) - 5}개")
+                    message_parts.append("")
 
+                notification_text = "\n".join(message_parts).strip()
+
+                # Get all chat IDs that have interacted with the bot
+                # For now, we'll log the changes (implement user tracking if needed)
                 logger.info(f"Drive changes detected: {len(new_files)} new, {len(deleted_files)} deleted")
-                drive_monitoring_state["recent_changes"].appendleft({
-                    "timestamp": datetime.utcnow().isoformat() + 'Z',
-                    "new": len(new_files),
-                    "deleted": len(deleted_files),
-                    "summary": summary
-                })
-                usage_metrics["drive_sync_runs"] += 1
 
+                # TODO: Implement broadcast to specific users
+                # This requires tracking which users have enabled Drive notifications
+
+            # Update cache if it's empty (first run)
             if not load_cached_files():
                 cache_current_files(current_files)
                 logger.info("Initialized Drive file cache")
@@ -2449,16 +1611,9 @@ async def monitor_drive_changes():
         except Exception as e:
             logger.error(f"Drive monitoring error: {e}")
 
-        interval = max(60, drive_monitoring_state.get("interval", DRIVE_MONITOR_INTERVAL))
-        try:
-            for _ in range(interval):
-                if not drive_monitoring_state.get("enabled", True):
-                    break
-                await asyncio.sleep(1)
-        except asyncio.CancelledError:
-            break
+        # Wait for next check
+        await asyncio.sleep(DRIVE_MONITOR_INTERVAL)
 
-    drive_monitoring_state["enabled"] = False
     logger.info("🔍 Drive monitoring worker stopped")
 
 
@@ -2613,11 +1768,6 @@ async def handle_document_auto_save(update: Update, context: ContextTypes.DEFAUL
             if web_link:
                 confirm_text += f"\n🔗 [드라이브에서 보기]({web_link})"
 
-            # Add smart suggestions based on file type
-            file_ext = os.path.splitext(doc.file_name)[1].lower()
-            suggestions = await suggest_smart_actions(file_ext, doc.file_name)
-            confirm_text += f"\n\n{suggestions}"
-
             await reply_text(update, confirm_text)
 
             # Analyze with Gemini if GEMINI is available
@@ -2683,7 +1833,6 @@ def main():
 
     app.add_handler(CommandHandler("start", handle_start))
     app.add_handler(CommandHandler("list", handle_list))
-    app.add_handler(CommandHandler("mode", handle_mode))
     app.add_handler(CommandHandler("drive", handle_drive))
     app.add_handler(CommandHandler("drivelist", handle_drive_list))
     app.add_handler(CommandHandler("driveget", handle_drive_get))
@@ -2699,11 +1848,6 @@ def main():
     app.add_handler(CommandHandler("cal_tomorrow", handle_cal_tomorrow))
     app.add_handler(CommandHandler("cal_week", handle_cal_week))
     app.add_handler(CommandHandler("cal_search", handle_cal_search))
-    app.add_handler(CommandHandler("gmail_reply", handle_gmail_reply))
-    app.add_handler(CommandHandler("gmail_recent", handle_gmail_recent))
-
-    # Add callback query handler for inline keyboards
-    app.add_handler(MessageHandler(filters.CALLBACK_QUERY, handle_callback_query))
 
     app.add_handler(MessageHandler(filters.Document.ALL, handle_document_auto_save))
     app.add_handler(MessageHandler(filters.PHOTO, handle_photo))

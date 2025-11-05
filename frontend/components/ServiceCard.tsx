@@ -27,6 +27,7 @@ export default function ServiceCard({
   const [apiKey, setApiKey] = useState(defaultValue)
   const [loading, setLoading] = useState(false)
   const [showKey, setShowKey] = useState(false)
+  const [error, setError] = useState<string | null>(null)
 
   const API_BASE = process.env.NEXT_PUBLIC_API_BASE || 'http://localhost:8000'
 
@@ -34,6 +35,7 @@ export default function ServiceCard({
     if (!apiKey.trim() || loading || disabled) return
 
     setLoading(true)
+    setError(null)
     try {
       const response = await fetch(`${API_BASE}/verify/${serviceName}`, {
         method: 'POST',
@@ -43,13 +45,24 @@ export default function ServiceCard({
         body: JSON.stringify({ api_key: apiKey })
       })
 
-      if (response.ok) {
+      let data: any = null
+      try {
+        data = await response.json()
+      } catch (jsonError) {
+        // ignore JSON parse errors for non-JSON responses
+      }
+
+      if (response.ok && data?.valid !== false) {
         onVerify(true)
+        setError(null)
       } else {
+        const detail = data?.detail || data?.error || '검증에 실패했습니다. 토큰을 다시 확인해 주세요.'
+        setError(typeof detail === 'string' ? detail : '검증에 실패했습니다. 토큰을 다시 확인해 주세요.')
         onVerify(false)
       }
     } catch (error) {
       console.error('Verification failed:', error)
+      setError(error instanceof Error ? error.message : '알 수 없는 오류가 발생했습니다.')
       onVerify(false)
     } finally {
       setLoading(false)
@@ -58,6 +71,7 @@ export default function ServiceCard({
 
   const handleReset = () => {
     setApiKey('')
+    setError(null)
     onVerify(false)
   }
 
@@ -141,6 +155,12 @@ export default function ServiceCard({
             </button>
           )}
         </div>
+
+        {error && (
+          <div className="bg-red-50 border border-red-200 rounded-lg p-3 text-sm text-red-700">
+            {error}
+          </div>
+        )}
 
         {/* 상태 메시지 */}
         {disabled && (
