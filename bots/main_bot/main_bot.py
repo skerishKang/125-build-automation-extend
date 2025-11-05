@@ -9,7 +9,7 @@ import json
 import asyncio
 import logging
 from datetime import datetime
-from typing import Dict, List, Optional
+from typing import Any, Dict
 
 # Add parent directories to path for imports
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
@@ -17,15 +17,15 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
 from dotenv import load_dotenv
 load_dotenv()
 
-from telegram import Update
-from telegram.ext import Application, CommandHandler, MessageHandler, ContextTypes, filters
+from telegram import Update, Bot
+from telegram.constants import ChatAction
+from telegram.ext import Application, CommandHandler, MessageHandler, ContextTypes, CallbackContext, filters
 
-from shared.redis_utils import BotMessenger
-from shared.gemini_client import GeminiAnalyzer
-from shared.telegram_utils import (
-    TelegramClient, send_progress_message,
-    send_success_message, send_error_message,
-    is_text_file, is_document_file, is_image_file, is_audio_file
+from bots.shared.redis_utils import BotMessenger, REDIS_ENABLED  # type: ignore
+from bots.shared.gemini_client import GeminiAnalyzer  # type: ignore
+from bots.shared.telegram_utils import (  # type: ignore
+    is_text_file,
+    is_document_file,
 )
 
 # Configure logging
@@ -43,7 +43,7 @@ logger = logging.getLogger("main_bot")
 MAIN_BOT_TOKEN = os.getenv("MAIN_BOT_TOKEN")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY_MAIN")
 REDIS_HOST = os.getenv("REDIS_HOST", "localhost")
-REDIS_PORT = os.getenv("REDIS_PORT", "6379")
+REDIS_PORT = int(os.getenv("REDIS_PORT", "6379"))
 
 # Global state
 active_tasks: Dict[str, Dict] = {}  # chat_id -> task_info
@@ -203,10 +203,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     # Send typing indicator
-    await context.bot.send_chat_action(
-        chat_id=chat_id,
-        action="typing"
-    )
+    await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
 
     # Use Gemini to generate response
     response = gemini.analyze_text(text)
@@ -257,7 +254,7 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     # Acknowledge receipt
-    ack_msg = await update.message.reply_text(
+    await update.message.reply_text(
         f"문서 접수!\n"
         f"파일: {file_name}\n"
         f"크기: {file_size / 1024:.1f}KB\n"
@@ -315,7 +312,7 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     # Acknowledge
-    ack_msg = await update.message.reply_text(
+    await update.message.reply_text(
         f"음성 접수!\n"
         f"길이: {duration // 60}분 {duration % 60}초\n"
         f"오디오봇이 처리 중입니다..."
@@ -356,7 +353,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     logger.info(f"Photo upload: {file_id}")
 
     # Acknowledge
-    ack_msg = await update.message.reply_text(
+    await update.message.reply_text(
         f"이미지 접수!\n"
         f"사진봇이 분석 중입니다..."
     )
@@ -381,90 +378,79 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     logger.info(f"Sent image task to image bot for chat {chat_id}")
 
 
-async def handle_result_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle result messages from specialized bots"""
+async def _process_result_payload(bot: Bot, payload: Dict[str, Any]):
+    """Process a single result payload coming from Redis."""
+    chat_id = str(payload.get("chat_id") or "")
+    result = payload.get("result", {})
+    bot_name = payload.get("bot_name", "unknown")
+
+    if not chat_id:
+        logger.warning("Result payload missing chat_id: %s", payload)
+        return
+
+    if chat_id not in active_tasks:
+        logger.warning("Received result for inactive chat %s", chat_id)
+        return
+
     try:
-        # Parse message from bot
-        chat_id = str(update.effective_chat.id)
-
-        # Check if there's an active task for this chat
-        if chat_id not in active_tasks:
-            logger.warning(f"Received result for inactive chat {chat_id}")
-            return
-
-        task = active_tasks[chat_id]
-        task_type = task.get("type")
-
-        # Handle based on task type
-        if task_type == "document":
-            await handle_document_result(update, context, chat_id)
-        elif task_type == "audio":
-            await handle_audio_result(update, context, chat_id)
-        elif task_type == "image":
-            await handle_image_result(update, context, chat_id)
-
-    except Exception as e:
-        logger.error(f"Error handling result: {e}")
-        await update.message.reply_text(f"[ERROR] 오류가 발생했습니다: {str(e)[:100]}")
+        if bot_name == "document_bot":
+            await send_document_result(bot, chat_id, result)
+        elif bot_name == "audio_bot":
+            await send_audio_result(bot, chat_id, result)
+        elif bot_name == "image_bot":
+            await send_image_result(bot, chat_id, result)
+        else:
+            logger.warning("Unknown bot_name in result payload: %s", bot_name)
+            await bot.send_message(
+                chat_id=int(chat_id),
+                text="처리 결과를 받았지만 어떤 전문봇에서 왔는지 확인할 수 없어요."
+            )
+    finally:
+        active_tasks.pop(chat_id, None)
+        logger.info("Completed task for chat %s", chat_id)
 
 
-async def handle_document_result(update: Update, context: ContextTypes.DEFAULT_TYPE, chat_id: str):
-    """Handle document analysis result"""
-    # This will be called when document bot sends result
-    # Implementation depends on how we structure the result messages
-    pass
+async def poll_result_messages(context: CallbackContext) -> None:
+    """Periodically consume result messages from Redis and dispatch to users."""
+    if not messenger.pubsub:
+        return
+
+    try:
+        # Drain all messages currently in the queue
+        message = await asyncio.to_thread(
+            messenger.pubsub.get_message,
+            ignore_subscribe_messages=True,
+            timeout=0.2,
+        )
+
+        while message:
+            if message.get("type") == "message":
+                data = message.get("data")
+                try:
+                    payload = json.loads(data) if isinstance(data, str) else data
+                except json.JSONDecodeError as exc:
+                    logger.error("Invalid JSON in result payload: %s", exc)
+                    payload = None
+
+                if isinstance(payload, dict):
+                    await _process_result_payload(context.bot, payload)
+                else:
+                    logger.warning("Unexpected payload type from Redis: %r", payload)
+
+            message = await asyncio.to_thread(
+                messenger.pubsub.get_message,
+                ignore_subscribe_messages=True,
+                timeout=0.0,
+            )
+
+    except Exception as exc:  # pragma: no cover - defensive logging
+        logger.error("Result listener error: %s", exc)
 
 
-async def handle_audio_result(update: Update, context: ContextTypes.DEFAULT_TYPE, chat_id: str):
-    """Handle audio analysis result"""
-    # This will be called when audio bot sends result
-    pass
-
-
-async def handle_image_result(update: Update, context: ContextTypes.DEFAULT_TYPE, chat_id: str):
-    """Handle image analysis result"""
-    # This will be called when image bot sends result
-    pass
-
-
-async def listen_for_results(application: Application):
-    """Background task to listen for results from specialized bots"""
-    logger.info("Started listening for results from specialized bots")
-
-    pubsub = messenger.pubsub
-    pubsub.subscribe("main_bot_results")
-
-    for message in pubsub.listen():
-        if message['type'] == 'message':
-            try:
-                data = json.loads(message['data'])
-                chat_id = data.get('chat_id')
-                result = data.get('result', {})
-                bot_name = data.get('bot_name', 'unknown')
-
-                if chat_id and chat_id in active_tasks:
-                    task = active_tasks[chat_id]
-
-                    # Send result to user
-                    if bot_name == 'document_bot':
-                        await send_document_result(application, chat_id, result)
-                    elif bot_name == 'audio_bot':
-                        await send_audio_result(application, chat_id, result)
-                    elif bot_name == 'image_bot':
-                        await send_image_result(application, chat_id, result)
-
-                    # Remove completed task
-                    del active_tasks[chat_id]
-                    logger.info(f"Completed task for chat {chat_id}")
-
-            except Exception as e:
-                logger.error(f"Error processing result message: {e}")
-
-
-async def send_document_result(application: Application, chat_id: str, result: Dict):
+async def send_document_result(bot: Bot, chat_id: str, result: Dict):
     """Send document analysis result to user"""
     try:
-        await application.bot.send_message(
+        await bot.send_message(
             chat_id=int(chat_id),
             text=f"문서 분석 완료!\n\n{result.get('text', 'N/A')}\n\n요약:\n{result.get('summary', 'N/A')}"
         )
@@ -472,10 +458,10 @@ async def send_document_result(application: Application, chat_id: str, result: D
         logger.error(f"Error sending document result: {e}")
 
 
-async def send_audio_result(application: Application, chat_id: str, result: Dict):
+async def send_audio_result(bot: Bot, chat_id: str, result: Dict):
     """Send audio transcription result to user"""
     try:
-        await application.bot.send_message(
+        await bot.send_message(
             chat_id=int(chat_id),
             text=f"음성 처리 완료!\n\n전사:\n{result.get('transcription', 'N/A')}\n\n요약:\n{result.get('summary', 'N/A')}"
         )
@@ -483,10 +469,10 @@ async def send_audio_result(application: Application, chat_id: str, result: Dict
         logger.error(f"Error sending audio result: {e}")
 
 
-async def send_image_result(application: Application, chat_id: str, result: Dict):
+async def send_image_result(bot: Bot, chat_id: str, result: Dict):
     """Send image analysis result to user"""
     try:
-        await application.bot.send_message(
+        await bot.send_message(
             chat_id=int(chat_id),
             text=f"이미지 분석 완료!\n\n설명:\n{result.get('description', 'N/A')}\n\n분석:\n{result.get('analysis', 'N/A')}"
         )
@@ -521,15 +507,21 @@ def main():
     print("[OK] Bot is running...")
     print("Press Ctrl+C to stop")
 
-    # Start result listener in background
-    loop = asyncio.get_event_loop()
-    result_listener = loop.create_task(listen_for_results(application))
+    if REDIS_ENABLED and messenger.pubsub:
+        messenger.pubsub.subscribe("main_bot_results")
+        application.job_queue.run_repeating(
+            poll_result_messages,
+            interval=1.0,
+            name="result_listener",
+        )
+        logger.info("Result listener scheduled via job queue")
+    else:
+        logger.info("Redis disabled or unavailable; skipping result listener")
 
     try:
         application.run_polling()
     except KeyboardInterrupt:
         print("\nBYE Shutting down...")
-        result_listener.cancel()
     finally:
         messenger.close()
 

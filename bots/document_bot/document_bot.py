@@ -19,9 +19,9 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from telegram import Bot
-from shared.redis_utils import BotMessenger
-from shared.gemini_client import GeminiAnalyzer
-from shared.telegram_utils import TelegramClient
+from bots.shared.redis_utils import BotMessenger  # type: ignore
+from bots.shared.gemini_client import GeminiAnalyzer  # type: ignore
+from bots.shared.telegram_utils import TelegramClient  # type: ignore
 
 # Configure logging
 logging.basicConfig(
@@ -38,7 +38,7 @@ logger = logging.getLogger("document_bot")
 DOCUMENT_BOT_TOKEN = os.getenv("DOCUMENT_BOT_TOKEN")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY_DOCUMENT")
 REDIS_HOST = os.getenv("REDIS_HOST", "localhost")
-REDIS_PORT = os.getenv("REDIS_PORT", "6379")
+REDIS_PORT = int(os.getenv("REDIS_PORT", "6379"))
 
 # Initialize
 messenger = BotMessenger("document_bot")
