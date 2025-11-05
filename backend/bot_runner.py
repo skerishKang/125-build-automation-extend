@@ -467,6 +467,21 @@ MID_LENGTH_MODEL = os.getenv("MID_LENGTH_AUDIO", "gemini")  # 30초-5분 기본
 DRIVE_MONITOR_INTERVAL = int(os.getenv("DRIVE_MONITOR_INTERVAL", "300"))  # 5분 (300초)
 ENABLE_DRIVE_MONITORING = os.getenv("ENABLE_DRIVE_MONITORING", "true").lower() == "true"
 
+# Gmail monitoring configuration
+GMAIL_MONITOR_INTERVAL = int(os.getenv("GMAIL_MONITOR_INTERVAL", "300"))  # 기본 5분 간격
+
+# Usage telemetry counters
+usage_metrics = {
+    "text_messages": 0,
+    "documents_saved": 0,
+    "photos_processed": 0,
+    "voices_processed": 0,
+    "drive_sync_runs": 0,
+    "drive_downloads": 0,
+    "gmail_notifications": 0,
+    "calendar_alerts_sent": 0
+}
+
 # Global application instance for Drive monitoring
 _app_instance = None
 
@@ -476,7 +491,10 @@ drive_monitoring_state = {
     "thread": None,
     "last_check": None,
     "total_files": 0,
-    "start_time": None
+    "start_time": None,
+    "interval": DRIVE_MONITOR_INTERVAL,
+    "recent_changes": deque(maxlen=20),
+    "last_manual_sync": None
 }
 
 # Gmail monitoring state control
@@ -485,7 +503,10 @@ gmail_monitoring_state = {
     "thread": None,
     "last_check": None,
     "total_emails": 0,
-    "start_time": None
+    "start_time": None,
+    "interval": GMAIL_MONITOR_INTERVAL,
+    "auth_mode": "unknown",
+    "recent_emails": deque(maxlen=50)
 }
 
 # Calendar monitoring state control
@@ -1823,54 +1844,68 @@ def gmail_monitor_loop():
             return
 
         logger.info("📧 Gmail monitoring worker started")
+        gmail_monitoring_state["enabled"] = True
+        gmail_monitoring_state["auth_mode"] = getattr(gmail_service, "auth_mode", "unknown")
+        gmail_monitoring_state["interval"] = GMAIL_MONITOR_INTERVAL
+        if not gmail_monitoring_state.get("start_time"):
+            gmail_monitoring_state["start_time"] = datetime.now().isoformat()
 
-        while gmail_monitoring_state["enabled"]:
+        while gmail_monitoring_state.get("enabled", True):
             try:
                 logger.info("📧 Checking for new emails...")
 
-                # Get recent emails
                 recent_emails = gmail_service.get_recent_emails(max_results=20)
                 new_emails = []
 
                 for email_info in recent_emails:
                     email_id = email_info['id']
 
-                    # Check if already processed
                     if email_id not in gmail_service.processed_emails:
                         email_content = gmail_service.get_email_content(email_id)
                         if email_content:
                             new_emails.append(email_content)
                             gmail_service.processed_emails.add(email_id)
+                            try:
+                                gmail_service.mark_as_read(email_id)
+                            except Exception as mark_err:
+                                logger.warning(f"Failed to mark email as read ({email_id}): {mark_err}")
 
-                # Process new emails
                 if new_emails:
                     logger.info(f"📧 Found {len(new_emails)} new emails")
                     gmail_monitoring_state["total_emails"] += len(new_emails)
 
                     for email_data in new_emails:
+                        gmail_monitoring_state["recent_emails"].appendleft({
+                            "subject": email_data.get('subject', '')[:120],
+                            "sender": email_data.get('sender', '')[:120],
+                            "date": email_data.get('date', ''),
+                            "processed_at": datetime.utcnow().isoformat() + 'Z'
+                        })
+                        usage_metrics["gmail_notifications"] += 1
                         asyncio.run_coroutine_threadsafe(
                             process_and_send_email(email_data),
                             asyncio.get_event_loop()
                         )
 
-                # Save processed emails
                 gmail_service.save_processed_emails()
-                gmail_monitoring_state["last_check"] = datetime.now().strftime("%H:%M:%S")
+                gmail_monitoring_state["last_check"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-                # Wait 5 minutes
-                for _ in range(300):  # Check every second for shutdown
-                    if not gmail_monitoring_state["enabled"]:
+                interval = max(30, gmail_monitoring_state.get("interval", GMAIL_MONITOR_INTERVAL))
+                for _ in range(interval):
+                    if not gmail_monitoring_state.get("enabled", True):
                         break
                     time.sleep(1)
 
             except Exception as e:
                 logger.error(f"Gmail monitoring error: {e}")
-                time.sleep(60)  # Wait 1 minute on error
+                time.sleep(60)
 
         logger.info("📧 Gmail monitoring worker stopped")
 
     except Exception as e:
         logger.error(f"Gmail monitoring loop error: {e}")
+    finally:
+        gmail_monitoring_state["enabled"] = False
 
 
 async def process_and_send_email(email_data):
@@ -2367,7 +2402,12 @@ async def monitor_drive_changes():
     if backend_path not in sys.path:
         sys.path.insert(0, backend_path)
 
-    while True:
+    drive_monitoring_state["enabled"] = True
+    if not drive_monitoring_state.get("start_time"):
+        drive_monitoring_state["start_time"] = datetime.now().isoformat()
+    drive_monitoring_state["interval"] = DRIVE_MONITOR_INTERVAL
+
+    while drive_monitoring_state.get("enabled", True):
         try:
             if not ENABLE_DRIVE_MONITORING:
                 await asyncio.sleep(60)
@@ -2378,46 +2418,30 @@ async def monitor_drive_changes():
                 cache_current_files, load_cached_files
             )
 
-            # Get current files
             current_files = get_folder_files()
+            drive_monitoring_state["total_files"] = len(current_files)
+            drive_monitoring_state["last_check"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-            # Check for deleted files
             deleted_files = check_deleted_files(current_files)
-
-            # Check for new files
             new_files = check_new_files()
 
-            # Broadcast notifications if there are changes
-            if (new_files or deleted_files) and _app_instance:
-                message_parts = []
-
+            if new_files or deleted_files:
+                summary_parts = []
                 if new_files:
-                    message_parts.append(f"🆕 **새로 올라온 파일** ({len(new_files)}개):")
-                    for file in new_files[:5]:  # Show max 5 files
-                        file_type = "📁 폴더" if file.get('mimeType') == 'application/vnd.google-apps.folder' else "📄"
-                        message_parts.append(f"• {file_type}: {file['name']}")
-                    if len(new_files) > 5:
-                        message_parts.append(f"... 외 {len(new_files) - 5}개")
-                    message_parts.append("")
-
+                    summary_parts.append(f"🆕 새 파일 {len(new_files)}개")
                 if deleted_files:
-                    message_parts.append(f"🗑️ **삭제된 파일** ({len(deleted_files)}개):")
-                    for file in deleted_files[:5]:  # Show max 5 files
-                        message_parts.append(f"• {file['name']}")
-                    if len(deleted_files) > 5:
-                        message_parts.append(f"... 외 {len(deleted_files) - 5}개")
-                    message_parts.append("")
+                    summary_parts.append(f"🗑️ 삭제 {len(deleted_files)}개")
+                summary = ", ".join(summary_parts) if summary_parts else "변경 없음"
 
-                notification_text = "\n".join(message_parts).strip()
-
-                # Get all chat IDs that have interacted with the bot
-                # For now, we'll log the changes (implement user tracking if needed)
                 logger.info(f"Drive changes detected: {len(new_files)} new, {len(deleted_files)} deleted")
+                drive_monitoring_state["recent_changes"].appendleft({
+                    "timestamp": datetime.utcnow().isoformat() + 'Z',
+                    "new": len(new_files),
+                    "deleted": len(deleted_files),
+                    "summary": summary
+                })
+                usage_metrics["drive_sync_runs"] += 1
 
-                # TODO: Implement broadcast to specific users
-                # This requires tracking which users have enabled Drive notifications
-
-            # Update cache if it's empty (first run)
             if not load_cached_files():
                 cache_current_files(current_files)
                 logger.info("Initialized Drive file cache")
@@ -2425,9 +2449,16 @@ async def monitor_drive_changes():
         except Exception as e:
             logger.error(f"Drive monitoring error: {e}")
 
-        # Wait for next check
-        await asyncio.sleep(DRIVE_MONITOR_INTERVAL)
+        interval = max(60, drive_monitoring_state.get("interval", DRIVE_MONITOR_INTERVAL))
+        try:
+            for _ in range(interval):
+                if not drive_monitoring_state.get("enabled", True):
+                    break
+                await asyncio.sleep(1)
+        except asyncio.CancelledError:
+            break
 
+    drive_monitoring_state["enabled"] = False
     logger.info("🔍 Drive monitoring worker stopped")
 
 
