@@ -682,13 +682,20 @@ async def monitor_drive_changes():
     """Background task to monitor Google Drive for changes"""
     logger.info("🔍 Drive monitoring worker started")
 
+    # Add backend to path for Thread
+    import sys
+    import os
+    backend_path = os.path.join(os.path.dirname(__file__))
+    if backend_path not in sys.path:
+        sys.path.insert(0, backend_path)
+
     while True:
         try:
             if not ENABLE_DRIVE_MONITORING:
                 await asyncio.sleep(60)
                 continue
 
-            from backend.services.drive_sync import (
+            from services.drive_sync import (
                 get_folder_files, check_new_files, check_deleted_files,
                 cache_current_files, load_cached_files
             )
