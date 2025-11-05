@@ -7,21 +7,23 @@ export default function Dashboard() {
 
   const [verifiedServices, setVerifiedServices] = useState<Record<string, boolean>>({})
   const [toast, setToast] = useState<{message: string, type: ToastType} | null>(null)
+  const isDemoMode = (process.env.NEXT_PUBLIC_DEMO_MODE || '').toLowerCase() === 'true'
 
   // 기본 API 키들 (환경변수나 하드코딩된 값)
   const defaultApiKeys = {
-    telegram: '8288922587:AAHUADrjbeLFSTxS_Hx6jEDEbAW88dOzgNY', // @mgs_hub_bot
-    slack: 'xoxp-9101858700288-9101858708496-9811755934066-f1e8d3fff60be56ed45d44f0e88dbda3'
+    telegram: process.env.NEXT_PUBLIC_DEFAULT_TELEGRAM_KEY || '',
+    slack: process.env.NEXT_PUBLIC_DEFAULT_SLACK_KEY || ''
   }
 
   // 컴포넌트 마운트 시 - 자동 검증 제거 (테스트 모드)
   useEffect(() => {
-    // 테스트를 위해 기본적으로 검증된 상태로 설정
-    setVerifiedServices({
-      telegram: true,
-      slack: true
-    })
-  }, [])
+    if (isDemoMode) {
+      setVerifiedServices({
+        telegram: !!defaultApiKeys.telegram,
+        slack: !!defaultApiKeys.slack
+      })
+    }
+  }, [isDemoMode, defaultApiKeys.telegram, defaultApiKeys.slack])
 
   // 토스트 표시
   const showToast = (message: string, type: ToastType) => {

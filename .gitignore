@@ -66,4 +66,21 @@ exported-assets.zip
 
 # Google Drive Service Account Keys (SECRETS - DO NOT COMMIT)
 service_account.json
+gmail_credentials.json
+telegram-google.json
+gmail_token.pickle
+gmail_token.json
+bots/.env
+bots/.env.*
 *.json (with private_key)
+*credentials*.json
+*secret*.json
+*token*.pickle
+
+# SQLite WAL/SHM shards
+*.sqlite-wal
+*.sqlite-shm
+*.db-wal
+*.db-shm
+arxiv_cache/*.db-wal
+arxiv_cache/*.db-shm

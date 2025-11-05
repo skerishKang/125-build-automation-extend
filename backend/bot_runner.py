@@ -24,11 +24,21 @@ SUPABASE_KEY = os.getenv("SUPABASE_ANON_KEY")
 
 # logging
 os.makedirs("logs", exist_ok=True)
+# Use RotatingFileHandler for log rotation (max 5MB, keep 3 backups)
+from logging.handlers import RotatingFileHandler
+file_handler = RotatingFileHandler(
+    os.path.join("logs", "bot_runner.log"),
+    maxBytes=5_000_000,
+    backupCount=3,
+    encoding='utf-8'
+)
+file_handler.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
+
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.FileHandler(os.path.join("logs", "bot_runner.log")),
+        file_handler,
         logging.StreamHandler()
     ]
 )
@@ -1013,6 +1023,10 @@ def gmail_monitor_loop():
                         if email_content:
                             new_emails.append(email_content)
                             gmail_service.processed_emails.add(email_id)
+                            try:
+                                gmail_service.mark_as_read(email_id)
+                            except Exception as mark_err:
+                                logger.warning(f"Failed to mark email as read ({email_id}): {mark_err}")
 
                 # Process new emails
                 if new_emails:
