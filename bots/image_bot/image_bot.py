@@ -81,9 +81,10 @@ def encode_image_to_base64(image_path: str) -> str:
 
 async def process_image_task(task_data: Dict):
     """Process image analysis task"""
+    data = task_data.get("data", task_data)
     try:
-        chat_id = task_data.get('chat_id')
-        image_data = task_data.get('image_data', {})
+        chat_id = data.get('chat_id')
+        image_data = data.get('image_data', {})
         file_id = image_data.get('file_id')
 
         # Generate file name
@@ -130,7 +131,7 @@ async def process_image_task(task_data: Dict):
         error_result = {
             "error": str(e)
         }
-        messenger.send_result(task_data.get('chat_id'), error_result)
+        messenger.send_result(data.get('chat_id'), error_result)
 
 
 async def listen_for_tasks():

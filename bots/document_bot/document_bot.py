@@ -200,9 +200,10 @@ def extract_text_from_pptx(file_path: str) -> str:
 
 async def process_document_task(task_data: Dict):
     """Process document analysis task"""
+    data = task_data.get('data', task_data)
     try:
-        chat_id = task_data.get('chat_id')
-        file_data = task_data.get('file_data', {})
+        chat_id = data.get('chat_id')
+        file_data = data.get('file_data', {})
         file_id = file_data.get('file_id')
         file_name = file_data.get('file_name', 'document')
 
@@ -272,9 +273,9 @@ async def process_document_task(task_data: Dict):
         # Send error result
         error_result = {
             "error": str(e),
-            "file_name": task_data.get('file_data', {}).get('file_name', 'unknown')
+            "file_name": file_data.get('file_name', 'unknown')
         }
-        messenger.send_result(task_data.get('chat_id'), error_result)
+        messenger.send_result(data.get('chat_id'), error_result)
 
 
 async def listen_for_tasks():

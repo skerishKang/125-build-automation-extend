@@ -103,9 +103,10 @@ async def transcribe_audio(file_path: str) -> str:
 
 async def process_audio_task(task_data: Dict):
     """Process audio transcription task"""
+    data = task_data.get('data', task_data)
     try:
-        chat_id = task_data.get('chat_id')
-        voice_data = task_data.get('voice_data', {})
+        chat_id = data.get('chat_id')
+        voice_data = data.get('voice_data', {})
         file_id = voice_data.get('file_id')
         duration = voice_data.get('duration', 0)
         mime_type = voice_data.get('mime_type', 'audio/ogg')
@@ -169,9 +170,9 @@ async def process_audio_task(task_data: Dict):
         # Send error result
         error_result = {
             "error": str(e),
-            "duration": task_data.get('voice_data', {}).get('duration', 0)
+            "duration": data.get('voice_data', {}).get('duration', 0)
         }
-        messenger.send_result(task_data.get('chat_id'), error_result)
+        messenger.send_result(data.get('chat_id'), error_result)
 
 
 async def listen_for_tasks():
