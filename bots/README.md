@@ -103,8 +103,18 @@ bots/
 Create a `.env` file in the `bots/` directory:
 
 ```env
-# Telegram Bot Token (from @BotFather)
-MAIN_BOT_TOKEN=123456789:ABCdefGHIjklMNOpqrsTUVwxyz
+# Individual Bot Tokens (from @BotFather)
+# Main Bot (Task Distributor)
+MAIN_BOT_TOKEN=8582906961:AAEx7WaxK6hMj_pvDnE8jZlcxxAxAOXh2JA
+
+# Document Bot (PDF, DOCX, TXT processing)
+DOCUMENT_BOT_TOKEN=8265722750:AAHYoAbXr9SVvJ7NL94BoO3H4BzRYYMpQBY
+
+# Audio Bot (OGG, MP3, WAV transcription)
+AUDIO_BOT_TOKEN=8293899599:AAHdenSXbmuH4ArjrewPf9dvjB5_KlbyRUg
+
+# Image Bot (JPG, PNG analysis)
+IMAGE_BOT_TOKEN=8334662540:AAEZxxFf9Ldn37H45bA0WSx9dIf0aKnDz5Q
 
 # Google Gemini API Key
 GEMINI_API_KEY=your_gemini_api_key_here
@@ -251,7 +261,10 @@ docker-compose up -d
 
 | Variable | Description | Required | Default |
 |----------|-------------|----------|---------|
-| `MAIN_BOT_TOKEN` | Telegram bot token | ✅ | - |
+| `MAIN_BOT_TOKEN` | Main bot (task distributor) token | ✅ | - |
+| `DOCUMENT_BOT_TOKEN` | Document bot token | ✅ | - |
+| `AUDIO_BOT_TOKEN` | Audio bot token | ✅ | - |
+| `IMAGE_BOT_TOKEN` | Image bot token | ✅ | - |
 | `GEMINI_API_KEY` | Google Gemini API key | ✅ | - |
 | `REDIS_HOST` | Redis server host | ❌ | localhost |
 | `REDIS_PORT` | Redis server port | ❌ | 6379 |

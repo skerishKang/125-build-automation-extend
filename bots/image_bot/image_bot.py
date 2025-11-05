@@ -35,7 +35,7 @@ logging.basicConfig(
 logger = logging.getLogger("image_bot")
 
 # Configuration
-MAIN_BOT_TOKEN = os.getenv("MAIN_BOT_TOKEN")
+IMAGE_BOT_TOKEN = os.getenv("IMAGE_BOT_TOKEN")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 REDIS_HOST = os.getenv("REDIS_HOST", "localhost")
 REDIS_PORT = os.getenv("REDIS_PORT", "6379")
@@ -43,7 +43,7 @@ REDIS_PORT = os.getenv("REDIS_PORT", "6379")
 # Initialize
 messenger = BotMessenger("image_bot")
 gemini = GeminiAnalyzer()
-telegram_client = TelegramClient(MAIN_BOT_TOKEN)
+telegram_client = TelegramClient(IMAGE_BOT_TOKEN)
 
 
 async def download_image_from_telegram(file_id: str, file_name: str) -> str:
@@ -152,9 +152,9 @@ async def main():
     """Main function"""
     print("=== Image Bot (Image Processing) ===")
 
-    if not MAIN_BOT_TOKEN:
-        print("❌ ERROR: MAIN_BOT_TOKEN is missing")
-        print("Please set MAIN_BOT_TOKEN in .env file")
+    if not IMAGE_BOT_TOKEN:
+        print("❌ ERROR: IMAGE_BOT_TOKEN is missing")
+        print("Please set IMAGE_BOT_TOKEN in .env file")
         return
 
     if not GEMINI_API_KEY:
