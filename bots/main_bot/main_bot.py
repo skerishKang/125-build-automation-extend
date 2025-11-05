@@ -649,7 +649,7 @@ async def poll_result_messages(context: CallbackContext) -> None:
         logger.error("Result listener error: %s", exc)
 
 
-async def wait_for_result(chat_id: str, timeout: int = 60) -> Optional[Dict[str, Any]]:
+async def wait_for_result(chat_id: str, timeout: int = 1800) -> Optional[Dict[str, Any]]:
     """Wait for a result payload from specialized bots."""
     event = asyncio.Event()
     pending_results[chat_id] = {"event": event, "result": None}
