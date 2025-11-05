@@ -298,27 +298,27 @@ async def main():
     print("=== Document Bot (Document Processing) ===")
 
     if not DOCUMENT_BOT_TOKEN:
-        print("❌ ERROR: DOCUMENT_BOT_TOKEN is missing")
+        print("ERROR: DOCUMENT_BOT_TOKEN is missing")
         print("Please set DOCUMENT_BOT_TOKEN in .env file")
         return
 
     if not GEMINI_API_KEY:
-        print("⚠️ WARNING: GEMINI_API_KEY is missing - AI features will be disabled")
+        print("WARNING: GEMINI_API_KEY is missing - AI features will be disabled")
 
     try:
         # Test Telegram connection
-        bot = Bot(token=MAIN_BOT_TOKEN)
+        bot = Bot(token=DOCUMENT_BOT_TOKEN)  # FIXED: Use correct token
         await bot.get_me()
-        print("✅ Telegram connection successful")
+        print("Telegram connection successful")
     except Exception as e:
-        print(f"❌ ERROR: Failed to connect to Telegram: {e}")
+        print(f"ERROR: Failed to connect to Telegram: {e}")
         return
 
     try:
         # Start listening for tasks
         await listen_for_tasks()
     except KeyboardInterrupt:
-        print("\n👋 Shutting down...")
+        print("\nShutting down...")
     finally:
         messenger.close()
 
