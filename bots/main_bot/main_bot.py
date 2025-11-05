@@ -9,7 +9,7 @@ import json
 import asyncio
 import logging
 from datetime import datetime
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 # Add parent directories to path for imports
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
@@ -48,6 +48,7 @@ REDIS_PORT = int(os.getenv("REDIS_PORT", "6379"))
 # Global state
 active_tasks: Dict[str, Dict] = {}  # chat_id -> task_info
 user_sessions: Dict[str, Dict] = {}  # user_id -> session_info
+pending_results: Dict[str, Dict[str, Any]] = {}  # chat_id -> {event, result}
 
 # Initialize messenger
 messenger = BotMessenger("main_bot")
@@ -283,6 +284,17 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     logger.info(f"Sent document task to document bot for chat {chat_id}")
 
+    result_payload = await wait_for_result(chat_id, timeout=180)
+
+    if result_payload:
+        await _process_result_payload(context.bot, result_payload)
+    else:
+        await context.bot.send_message(
+            chat_id=int(chat_id),
+            text="⏰ 문서 처리가 예상보다 오래 걸려 중단되었어요. 다시 시도해주세요."
+        )
+        active_tasks.pop(chat_id, None)
+
 
 async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle voice messages"""
@@ -340,6 +352,17 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     logger.info(f"Sent voice task to audio bot for chat {chat_id}")
 
+    result_payload = await wait_for_result(chat_id, timeout=180)
+
+    if result_payload:
+        await _process_result_payload(context.bot, result_payload)
+    else:
+        await context.bot.send_message(
+            chat_id=int(chat_id),
+            text="⏰ 음성 처리가 예상보다 오래 걸려 중단되었어요. 다시 시도해주세요."
+        )
+        active_tasks.pop(chat_id, None)
+
 
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle photo uploads"""
@@ -377,6 +400,17 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     logger.info(f"Sent image task to image bot for chat {chat_id}")
 
+    result_payload = await wait_for_result(chat_id, timeout=120)
+
+    if result_payload:
+        await _process_result_payload(context.bot, result_payload)
+    else:
+        await context.bot.send_message(
+            chat_id=int(chat_id),
+            text="⏰ 이미지 처리가 예상보다 오래 걸려 중단되었어요. 다시 시도해주세요."
+        )
+        active_tasks.pop(chat_id, None)
+
 
 async def _process_result_payload(bot: Bot, payload: Dict[str, Any]):
     """Process a single result payload coming from Redis."""
@@ -412,11 +446,13 @@ async def _process_result_payload(bot: Bot, payload: Dict[str, Any]):
 
 async def poll_result_messages(context: CallbackContext) -> None:
     """Periodically consume result messages from Redis and dispatch to users."""
+    if not pending_results:
+        return
+
     if not messenger.pubsub:
         return
 
     try:
-        # Drain all messages currently in the queue
         message = await asyncio.to_thread(
             messenger.pubsub.get_message,
             ignore_subscribe_messages=True,
@@ -433,7 +469,12 @@ async def poll_result_messages(context: CallbackContext) -> None:
                     payload = None
 
                 if isinstance(payload, dict):
-                    await _process_result_payload(context.bot, payload)
+                    chat_id = str(payload.get("chat_id") or "")
+                    if chat_id in pending_results:
+                        pending_results[chat_id]["result"] = payload
+                        pending_results[chat_id]["event"].set()
+                    else:
+                        await _process_result_payload(context.bot, payload)
                 else:
                     logger.warning("Unexpected payload type from Redis: %r", payload)
 
@@ -445,6 +486,21 @@ async def poll_result_messages(context: CallbackContext) -> None:
 
     except Exception as exc:  # pragma: no cover - defensive logging
         logger.error("Result listener error: %s", exc)
+
+
+async def wait_for_result(chat_id: str, timeout: int = 60) -> Optional[Dict[str, Any]]:
+    """Wait for a result payload from specialized bots."""
+    event = asyncio.Event()
+    pending_results[chat_id] = {"event": event, "result": None}
+
+    try:
+        await asyncio.wait_for(event.wait(), timeout=timeout)
+        return pending_results.get(chat_id, {}).get("result")
+    except asyncio.TimeoutError:
+        logger.error("Timeout waiting for result for chat %s", chat_id)
+        return None
+    finally:
+        pending_results.pop(chat_id, None)
 
 
 async def send_document_result(bot: Bot, chat_id: str, result: Dict):
