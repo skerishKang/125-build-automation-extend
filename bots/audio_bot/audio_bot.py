@@ -12,7 +12,7 @@ from datetime import datetime
 from typing import Dict, List, Optional
 
 # Add parent directories to path for imports
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
 
 from dotenv import load_dotenv
 load_dotenv()
@@ -204,7 +204,7 @@ async def main():
 
     try:
         # Test Telegram connection
-        bot = Bot(token=MAIN_BOT_TOKEN)
+        bot = Bot(token=AUDIO_BOT_TOKEN)
         await bot.get_me()
         print("✅ Telegram connection successful")
     except Exception as e:
