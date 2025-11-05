@@ -100,29 +100,34 @@ bots/
 
 ### 1. Environment Setup
 
-Create a `.env` file in the `bots/` directory:
+**Option A: Use `.env` Template (Windows Users - Recommended)**
+```bash
+cd bots
+copy .env.example .env
+notepad .env
+```
 
+Edit `.env` and add your Gemini API keys:
 ```env
-# Individual Bot Tokens (from @BotFather)
-# Main Bot (Task Distributor)
+# Bot Tokens (already set)
 MAIN_BOT_TOKEN=8582906961:AAEx7WaxK6hMj_pvDnE8jZlcxxAxAOXh2JA
-
-# Document Bot (PDF, DOCX, TXT processing)
 DOCUMENT_BOT_TOKEN=8265722750:AAHYoAbXr9SVvJ7NL94BoO3H4BzRYYMpQBY
-
-# Audio Bot (OGG, MP3, WAV transcription)
 AUDIO_BOT_TOKEN=8293899599:AAHdenSXbmuH4ArjrewPf9dvjB5_KlbyRUg
-
-# Image Bot (JPG, PNG analysis)
 IMAGE_BOT_TOKEN=8334662540:AAEZxxFf9Ldn37H45bA0WSx9dIf0aKnDz5Q
 
-# Google Gemini API Key
-GEMINI_API_KEY=your_gemini_api_key_here
+# Individual Gemini API Keys for Load Distribution
+GEMINI_API_KEY_MAIN=your_first_gemini_api_key
+GEMINI_API_KEY_DOCUMENT=your_second_gemini_api_key
+GEMINI_API_KEY_AUDIO=your_third_gemini_api_key
+GEMINI_API_KEY_IMAGE=your_fourth_gemini_api_key
 
 # Redis Configuration
 REDIS_HOST=localhost
 REDIS_PORT=6379
 ```
+
+**Option B: Manual Creation**
+Create a `.env` file in the `bots/` directory with the content above.
 
 ### 2. Install Dependencies
 
@@ -173,7 +178,21 @@ Download Redis from: https://github.com/microsoftarchive/redis/releases
 
 ### 4. Run the System
 
-**Option A: Unified Startup (Recommended)**
+#### Option A: Unified Startup (Recommended)
+
+**Windows Users:**
+```cmd
+# Double-click to run (easiest)
+start_4bots.bat
+
+# Or from Command Prompt
+start_4bots.bat
+
+# Or from PowerShell
+./start_4bots.bat
+```
+
+**macOS/Linux Users:**
 ```bash
 cd bots
 python run_bots.py
@@ -478,6 +497,55 @@ docker-compose logs -f telegram-bots
 **Solution:**
 - Ensure Redis server is running
 - Check `REDIS_HOST` and `REDIS_PORT` in `.env`
+
+**2. Unicode Encoding Error (Windows)**
+```
+UnicodeEncodeError: 'cp949' codec can't encode character
+```
+**Solution:**
+- Use the provided bat file: `start_4bots.bat`
+- The bat file automatically sets `PYTHONIOENCODING=utf-8`
+- **OR** set PowerShell profile permanently:
+```powershell
+# Open PowerShell profile
+notepad $PROFILE
+# Add this line:
+$env:PYTHONIOENCODING="utf-8"
+```
+
+**3. ModuleNotFoundError: No module named 'shared'**
+```
+ModuleNotFoundError: No module named 'shared'
+```
+**Solution:**
+- Ensure you're running from the `bots/` directory
+- The bot runner automatically sets PYTHONPATH
+- Use: `start_4bots.bat` instead of running `python run_bots.py` directly
+
+**4. Windows: Setting PYTHONIOENCODING Permanently**
+
+There are 3 ways:
+
+**Method 1: Using bat files (Easiest)**
+- Just use `start_4bots.bat` or `bots/start_bots.bat`
+- No manual setup required!
+
+**Method 2: PowerShell Profile (Permanent)**
+```powershell
+# Create and edit profile
+if (!(Test-Path -Path $PROFILE)) {
+    New-Item -Type File -Path $PROFILE -Force
+}
+notepad $PROFILE
+# Add: $env:PYTHONIOENCODING="utf-8"
+```
+
+**Method 3: System Environment Variables**
+1. Win+R → `sysdm.cpl` → Advanced → Environment Variables
+2. System Variables → Add:
+   - Name: `PYTHONIOENCODING`
+   - Value: `utf-8`
+3. Restart PowerShell/Command Prompt
 - Test: `redis-cli ping` should return `PONG`
 
 **2. Telegram Bot Token Invalid**

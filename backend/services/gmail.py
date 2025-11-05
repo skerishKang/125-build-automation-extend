@@ -23,11 +23,17 @@ except ImportError:
 logger = logging.getLogger("gmail_service")
 
 # Gmail API scopes
-SCOPES = ['https://www.googleapis.com/auth/gmail.readonly']
+SCOPES = [
+    'https://www.googleapis.com/auth/gmail.readonly',
+    'https://www.googleapis.com/auth/gmail.send',  # For sending emails
+    'https://www.googleapis.com/auth/calendar'
+]
 
 # Token pickle file for OAuth2
-TOKEN_FILE = os.path.join(tempfile.gettempdir(), 'gmail_token.pickle')
-CREDENTIALS_FILE = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'gmail_credentials.json')
+# 프로젝트 루트의 telegram-google.json 사용
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))  # 프로젝트 루트 (backend의 2단계 위)
+TOKEN_FILE = os.path.join(BASE_DIR, 'token.pickle')  # 프로젝트 루트에 토큰 저장
+CREDENTIALS_FILE = os.path.join(BASE_DIR, 'telegram-google.json')  # 프로젝트 루트의 credentials 사용
 
 # Track processed emails
 PROCESSED_EMAILS_FILE = os.path.join(tempfile.gettempdir(), 'gmail_processed.json')
@@ -64,6 +70,8 @@ class GmailService:
 
                 flow = InstalledAppFlow.from_client_secrets_file(
                     CREDENTIALS_FILE, SCOPES)
+                # 명시적으로 redirect URI 설정 (Desktop app용)
+                flow.redirect_uri = 'urn:ietf:wg:oauth:2.0:oob'
                 creds = flow.run_local_server(port=0)
 
             # Save credentials for next run
