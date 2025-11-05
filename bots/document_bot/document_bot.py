@@ -282,6 +282,7 @@ async def listen_for_tasks():
     logger.info("Document bot started, listening for tasks...")
 
     pubsub = messenger.pubsub
+    if not pubsub:        logger.info("[MOCK] Redis disabled - document bot in standby mode")        while True:            await asyncio.sleep(60)        return
     pubsub.subscribe("document_tasks")
 
     for message in pubsub.listen():
@@ -298,27 +299,27 @@ async def main():
     print("=== Document Bot (Document Processing) ===")
 
     if not DOCUMENT_BOT_TOKEN:
-        print("❌ ERROR: DOCUMENT_BOT_TOKEN is missing")
+        print("[ERROR] ERROR: DOCUMENT_BOT_TOKEN is missing")
         print("Please set DOCUMENT_BOT_TOKEN in .env file")
         return
 
     if not GEMINI_API_KEY:
-        print("⚠️ WARNING: GEMINI_API_KEY is missing - AI features will be disabled")
+        print("[WARN] WARNING: GEMINI_API_KEY is missing - AI features will be disabled")
 
     try:
         # Test Telegram connection
-        bot = Bot(token=MAIN_BOT_TOKEN)
+        bot = Bot(token=DOCUMENT_BOT_TOKEN)
         await bot.get_me()
-        print("✅ Telegram connection successful")
+        print("[OK] Telegram connection successful")
     except Exception as e:
-        print(f"❌ ERROR: Failed to connect to Telegram: {e}")
+        print(f"[ERROR] Failed to connect to Telegram: {e}")
         return
 
     try:
         # Start listening for tasks
         await listen_for_tasks()
     except KeyboardInterrupt:
-        print("\n👋 Shutting down...")
+        print("\nBYE Shutting down...")
     finally:
         messenger.close()
 

@@ -60,15 +60,15 @@ async def handle_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     name = user.first_name or "사용자"
 
     welcome_message = f"""
-🤖 **안녕하세요 {name}님! 메인봇이에요!**
+[BOT] **안녕하세요 {name}님! 메인봇이에요!**
 
-저는 전문봇들과 협력하는 메인봇입니다! 🚀
+저는 전문봇들과 협력하는 메인봇입니다! [RUN]
 
-**📋 사용 가능한 기능:**
-• 💬 자유 대화 (Gemini AI)
-• 📄 문서 분석 (PDF, DOCX, TXT 등)
-• 🎤 음성 처리 (OGG, MP3, WAV 등)
-• 🖼️ 이미지 분석 (JPG, PNG 등)
+**[DOC] 사용 가능한 기능:**
+• [CHAT] 자유 대화 (Gemini AI)
+• [FILE] 문서 분석 (PDF, DOCX, TXT 등)
+• [AUDIO] 음성 처리 (OGG, MP3, WAV 등)
+• [IMAGE] 이미지 분석 (JPG, PNG 등)
 
 **🔧 명령어:**
 • `/help` - 도움말 보기
@@ -88,21 +88,21 @@ developed by Claude Code
 async def handle_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle /help command"""
     help_text = """
-📋 **도움말**
+[DOC] **도움말**
 
-**💬 일반 대화**
+**[CHAT] 일반 대화**
 - 텍스트를 입력하시면 Gemini AI가 답변합니다
 
-**📄 문서 처리**
+**[FILE] 문서 처리**
 - PDF, DOCX, TXT, CSV 파일 업로드
 - 문서봇이 자동으로 분석합니다
 - 진행 상황을 실시간으로 알려드려요
 
-**🎤 음성 처리**
+**[AUDIO] 음성 처리**
 - OGG, MP3, WAV 파일 업로드
 - 오디오봇이 음성을 텍스트로 변환하고 요약합니다
 
-**🖼️ 이미지 분석**
+**[IMAGE] 이미지 분석**
 - JPG, PNG 등 이미지 업로드
 - 사진봇이 이미지를 분석하고 설명해드립니다
 
@@ -110,7 +110,7 @@ async def handle_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
 • `/status` - 현재 봇 상태
 • `/bots` - 전문봇 상태 확인
 
-**💡 사용 팁**
+**[TIP] 사용 팁**
 • 여러 파일을 동시에 업로드 가능
 • 파일 크기는 최대 50MB까지 지원
 • 분석 중에도 다른 대화 계속 가능!
@@ -130,25 +130,25 @@ async def handle_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if chat_id in active_tasks:
         task = active_tasks[chat_id]
         active_task_info = f"""
-📊 **현재 작업:**
+[STATS] **현재 작업:**
 • 타입: {task.get('type', 'N/A')}
 • 상태: {task.get('status', 'N/A')}
 • 시작: {task.get('start_time', 'N/A')}
 """
 
     status_text = f"""
-🤖 **메인봇 상태**
+[BOT] **메인봇 상태**
 
-📡 **연결 상태:**
-• 메인봇: ✅ 실행 중
+[SIGNAL] **연결 상태:**
+• 메인봇: [OK] 실행 중
 • Redis: {REDIS_HOST}:{REDIS_PORT}
-• Gemini AI: {'✅ 활성' if GEMINI_API_KEY else '❌ 비활성'}
+• Gemini AI: {'[OK] 활성' if GEMINI_API_KEY else '[ERROR] 비활성'}
 
-📊 **작업 현황:**
+[STATS] **작업 현황:**
 • 활성 작업: {task_count}개
 {active_task_info}
 
-🤖 **전문봇:**
+[BOT] **전문봇:**
 • 문서봇: 준비 완료
 • 오디오봇: 준비 완료
 • 사진봇: 준비 완료
@@ -160,24 +160,24 @@ async def handle_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def handle_bots(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle /bots command - Check specialized bot status"""
     status_text = """
-🤖 **전문봇 상태**
+[BOT] **전문봇 상태**
 
-📄 **문서봇**
+[FILE] **문서봇**
 • 역할: PDF, DOCX, TXT 등 문서 전문 분석
 • 기능: 텍스트 추출, AI 분석, 요약
-• 상태: 🟢 대기 중
+• 상태: [GREEN] 대기 중
 
-🎤 **오디오봇**
+[AUDIO] **오디오봇**
 • 역할: OGG, MP3, WAV 등 음성 전문 처리
 • 기능: 음성 인식(Whisper), AI 요약
-• 상태: 🟢 대기 중
+• 상태: [GREEN] 대기 중
 
-🖼️ **사진봇**
+[IMAGE] **사진봇**
 • 역할: JPG, PNG 등 이미지 전문 분석
 • 기능: 이미지 설명, OCR, AI 분석
-• 상태: 🟢 대기 중
+• 상태: [GREEN] 대기 중
 
-**💡 사용법:**
+**[TIP] 사용법:**
 메인봇에 파일을 업로드하면 해당 전문봇이 자동으로 처리합니다!
     """
 
@@ -198,7 +198,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if not GEMINI_API_KEY:
         await update.message.reply_text(
-            "⚠️ Gemini API가 설정되지 않아 AI 대화가 비활성화되어 있어요."
+            "[WARN] Gemini API가 설정되지 않아 AI 대화가 비활성화되어 있어요."
         )
         return
 
@@ -223,7 +223,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(response)
     else:
         await update.message.reply_text(
-            "⚠️ 죄송해요, 지금은 답변을 생성할 수 없어요."
+            "[WARN] 죄송해요, 지금은 답변을 생성할 수 없어요."
         )
 
 
@@ -242,7 +242,7 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Check if it's a document
     if not is_document_file(file_name) and not is_text_file(file_name):
         await update.message.reply_text(
-            f"⚠️ 지원하지 않는 파일 형식입니다: {file_name}\n"
+            f"[WARN] 지원하지 않는 파일 형식입니다: {file_name}\n"
             f"지원 형식: PDF, DOCX, TXT, CSV 등"
         )
         return
@@ -251,17 +251,17 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
     max_size = 50 * 1024 * 1024
     if file_size > max_size:
         await update.message.reply_text(
-            f"⚠️ 파일이 너무 큽니다 (최대 50MB)\n"
+            f"[WARN] 파일이 너무 큽니다 (최대 50MB)\n"
             f"현재 크기: {file_size / (1024*1024):.1f}MB"
         )
         return
 
     # Acknowledge receipt
     ack_msg = await update.message.reply_text(
-        f"📄 **문서 접수!**\n"
+        f"[FILE] **문서 접수!**\n"
         f"파일: {file_name}\n"
         f"크기: {file_size / 1024:.1f}KB\n"
-        f"🤖 문서봇이 분석 중입니다..."
+        f"[BOT] 문서봇이 분석 중입니다..."
     )
 
     # Store task info
@@ -301,7 +301,7 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Check if it's audio
     if not voice.mime_type or not voice.mime_type.startswith('audio/'):
         await update.message.reply_text(
-            "⚠️ 오디오 파일이 아닙니다."
+            "[WARN] 오디오 파일이 아닙니다."
         )
         return
 
@@ -309,16 +309,16 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
     max_duration = 5 * 60
     if duration > max_duration:
         await update.message.reply_text(
-            f"⚠️ 음성이 너무 깁니다 (최대 5분)\n"
+            f"[WARN] 음성이 너무 깁니다 (최대 5분)\n"
             f"현재 길이: {duration // 60}분 {duration % 60}초"
         )
         return
 
     # Acknowledge
     ack_msg = await update.message.reply_text(
-        f"🎤 **음성 접수!**\n"
+        f"[AUDIO] **음성 접수!**\n"
         f"길이: {duration // 60}분 {duration % 60}초\n"
-        f"🤖 오디오봇이 처리 중입니다..."
+        f"[BOT] 오디오봇이 처리 중입니다..."
     )
 
     # Store task info
@@ -357,8 +357,8 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # Acknowledge
     ack_msg = await update.message.reply_text(
-        f"🖼️ **이미지 접수!**\n"
-        f"🤖 사진봇이 분석 중입니다..."
+        f"[IMAGE] **이미지 접수!**\n"
+        f"[BOT] 사진봇이 분석 중입니다..."
     )
 
     # Store task info
@@ -405,7 +405,7 @@ async def handle_result_message(update: Update, context: ContextTypes.DEFAULT_TY
 
     except Exception as e:
         logger.error(f"Error handling result: {e}")
-        await update.message.reply_text(f"❌ 오류가 발생했습니다: {str(e)[:100]}")
+        await update.message.reply_text(f"[ERROR] 오류가 발생했습니다: {str(e)[:100]}")
 
 
 async def handle_document_result(update: Update, context: ContextTypes.DEFAULT_TYPE, chat_id: str):
@@ -466,7 +466,7 @@ async def send_document_result(application: Application, chat_id: str, result: D
     try:
         await application.bot.send_message(
             chat_id=int(chat_id),
-            text=f"📄 **문서 분석 완료!**\n\n{result.get('text', 'N/A')}\n\n📊 **요약:**\n{result.get('summary', 'N/A')}"
+            text=f"[FILE] **문서 분석 완료!**\n\n{result.get('text', 'N/A')}\n\n[STATS] **요약:**\n{result.get('summary', 'N/A')}"
         )
     except Exception as e:
         logger.error(f"Error sending document result: {e}")
@@ -477,7 +477,7 @@ async def send_audio_result(application: Application, chat_id: str, result: Dict
     try:
         await application.bot.send_message(
             chat_id=int(chat_id),
-            text=f"🎤 **음성 처리 완료!**\n\n📝 **전사:**\n{result.get('transcription', 'N/A')}\n\n📊 **요약:**\n{result.get('summary', 'N/A')}"
+            text=f"[AUDIO] **음성 처리 완료!**\n\n📝 **전사:**\n{result.get('transcription', 'N/A')}\n\n[STATS] **요약:**\n{result.get('summary', 'N/A')}"
         )
     except Exception as e:
         logger.error(f"Error sending audio result: {e}")
@@ -488,7 +488,7 @@ async def send_image_result(application: Application, chat_id: str, result: Dict
     try:
         await application.bot.send_message(
             chat_id=int(chat_id),
-            text=f"🖼️ **이미지 분석 완료!**\n\n🔍 **설명:**\n{result.get('description', 'N/A')}\n\n📊 **분석:**\n{result.get('analysis', 'N/A')}"
+            text=f"[IMAGE] **이미지 분석 완료!**\n\n[VIEW] **설명:**\n{result.get('description', 'N/A')}\n\n[STATS] **분석:**\n{result.get('analysis', 'N/A')}"
         )
     except Exception as e:
         logger.error(f"Error sending image result: {e}")
@@ -499,7 +499,7 @@ def main():
     print("=== Main Bot (Task Distributor) ===")
 
     if not MAIN_BOT_TOKEN:
-        print("❌ ERROR: MAIN_BOT_TOKEN is missing")
+        print("[ERROR] ERROR: MAIN_BOT_TOKEN is missing")
         print("Please set MAIN_BOT_TOKEN in .env file")
         return
 
@@ -518,7 +518,7 @@ def main():
     application.add_handler(MessageHandler(filters.PHOTO, handle_photo))
 
     # Start bot
-    print("✅ Bot is running...")
+    print("[OK] Bot is running...")
     print("Press Ctrl+C to stop")
 
     # Start result listener in background
@@ -528,7 +528,7 @@ def main():
     try:
         application.run_polling()
     except KeyboardInterrupt:
-        print("\n👋 Shutting down...")
+        print("\nBYE Shutting down...")
         result_listener.cancel()
     finally:
         messenger.close()

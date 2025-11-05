@@ -192,13 +192,13 @@ async def main():
             db=0
         )
         r.ping()
-        print("✅ Redis connection: OK\n")
+        print("[OK] Redis connection: OK\n")
     except Exception as e:
-        print(f"⚠️  Redis connection failed: {e}")
+        print(f"[WARN]  Redis connection failed: {e}")
         print("   Make sure Redis is running\n")
 
     # Print bot information
-    print("📋 Bot Configuration:")
+    print("[DOC] Bot Configuration:")
     for bot_key, bot_info in bots.items():
         print(f"   {bot_key.upper():12} - {bot_info['name']:20} ({bot_info['description']})")
 
@@ -211,7 +211,7 @@ async def main():
     try:
         await start_all_bots()
     except Exception as e:
-        logger.error(f"❌ Unexpected error: {e}", exc_info=True)
+        logger.error(f"[ERROR] Unexpected error: {e}", exc_info=True)
         return 1
 
     return 0
