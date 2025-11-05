@@ -164,7 +164,10 @@ async def main():
         "DOCUMENT_BOT_TOKEN",
         "AUDIO_BOT_TOKEN",
         "IMAGE_BOT_TOKEN",
-        "GEMINI_API_KEY"
+        "GEMINI_API_KEY_MAIN",
+        "GEMINI_API_KEY_DOCUMENT",
+        "GEMINI_API_KEY_AUDIO",
+        "GEMINI_API_KEY_IMAGE"
     ]
     missing_vars = [var for var in required_vars if not os.getenv(var)]
 

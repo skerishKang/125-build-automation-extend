@@ -36,13 +36,13 @@ logger = logging.getLogger("document_bot")
 
 # Configuration
 DOCUMENT_BOT_TOKEN = os.getenv("DOCUMENT_BOT_TOKEN")
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY_DOCUMENT")
 REDIS_HOST = os.getenv("REDIS_HOST", "localhost")
 REDIS_PORT = os.getenv("REDIS_PORT", "6379")
 
 # Initialize
 messenger = BotMessenger("document_bot")
-gemini = GeminiAnalyzer()
+gemini = GeminiAnalyzer(GEMINI_API_KEY)
 telegram_client = TelegramClient(DOCUMENT_BOT_TOKEN)
 
 

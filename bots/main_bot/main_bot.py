@@ -41,7 +41,7 @@ logger = logging.getLogger("main_bot")
 
 # Configuration
 MAIN_BOT_TOKEN = os.getenv("MAIN_BOT_TOKEN")
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY_MAIN")
 REDIS_HOST = os.getenv("REDIS_HOST", "localhost")
 REDIS_PORT = os.getenv("REDIS_PORT", "6379")
 
@@ -51,7 +51,7 @@ user_sessions: Dict[str, Dict] = {}  # user_id -> session_info
 
 # Initialize messenger
 messenger = BotMessenger("main_bot")
-gemini = GeminiAnalyzer()
+gemini = GeminiAnalyzer(GEMINI_API_KEY)
 
 
 async def handle_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
