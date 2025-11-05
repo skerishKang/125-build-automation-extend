@@ -84,6 +84,34 @@ ENABLE_DRIVE_MONITORING = os.getenv("ENABLE_DRIVE_MONITORING", "true").lower() =
 # Global application instance for Drive monitoring
 _app_instance = None
 
+# Drive monitoring state control
+drive_monitoring_state = {
+    "enabled": False,
+    "thread": None,
+    "last_check": None,
+    "total_files": 0,
+    "start_time": None
+}
+
+# Gmail monitoring state control
+gmail_monitoring_state = {
+    "enabled": False,
+    "thread": None,
+    "last_check": None,
+    "total_emails": 0,
+    "start_time": None
+}
+
+# Calendar monitoring state control
+calendar_monitoring_state = {
+    "enabled": False,
+    "thread": None,
+    "last_check": None,
+    "total_alerts": 0,
+    "start_time": None,
+    "alerted_events": set()  # Track alerted event IDs
+}
+
 
 def get_audio_duration(ogg_path: str) -> float:
     """Get audio duration in seconds using ffprobe (if available) or estimate"""
@@ -219,8 +247,10 @@ async def handle_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "- 자유 대화 (메모리 포함)\n"
         "- 문서/이미지/음성 멀티모달 처리\n"
         "- Google Drive 양방향 동기화\n"
+        "- Gmail 실시간 감시 및 AI 요약\n"
         f"- {monitoring_status}\n\n"
-        "도움말: /drive")
+        "📂 **Drive 명령어**: /drive\n"
+        "📧 **Gmail 명령어**: /gmail_on, /gmail_off")
 
 
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -553,7 +583,14 @@ async def handle_drive_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
     progress_messages.append(await update.message.reply_text("📁 드라이브 파일 목록 조회 중... [0%]"))
 
     try:
-        from backend.services.drive_sync import get_folder_files, format_file_list
+        # Add backend to path for Telegram handlers
+        import sys
+        import os
+        backend_path = os.path.join(os.path.dirname(__file__))
+        if backend_path not in sys.path:
+            sys.path.insert(0, backend_path)
+
+        from services.drive_sync import get_folder_files, format_file_list
 
         progress_messages.append(await update.message.reply_text("📂 드라이브 연결 중... [30%]"))
 
@@ -585,6 +622,13 @@ async def handle_drive_get(update: Update, context: ContextTypes.DEFAULT_TYPE):
     progress_messages.append(await update.message.reply_text(f"📥 드라이브에서 파일 다운로드 중... [0%]"))
 
     try:
+        # Add backend to path for Telegram handlers
+        import sys
+        import os
+        backend_path = os.path.join(os.path.dirname(__file__))
+        if backend_path not in sys.path:
+            sys.path.insert(0, backend_path)
+
         from backend.services.drive_sync import get_file_info, download_file
 
         progress_messages.append(await update.message.reply_text("📂 파일 정보 조회 중... [30%]"))
@@ -636,6 +680,13 @@ async def handle_drive_sync(update: Update, context: ContextTypes.DEFAULT_TYPE):
     progress_messages.append(await update.message.reply_text("🔍 드라이브 새 파일 확인 중... [0%]"))
 
     try:
+        # Add backend to path for Telegram handlers
+        import sys
+        import os
+        backend_path = os.path.join(os.path.dirname(__file__))
+        if backend_path not in sys.path:
+            sys.path.insert(0, backend_path)
+
         from backend.services.drive_sync import check_new_files, get_folder_files, check_deleted_files
 
         progress_messages.append(await update.message.reply_text("📂 드라이브 스캔 중... [50%]"))
@@ -676,6 +727,805 @@ async def handle_drive_sync(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         logger.error(f"Drive sync error: {e}")
         await reply_text(update, f"새 파일 확인 중 오류가 발생했어요: {str(e)[:100]}")
+
+
+# ========== Gmail Handlers ==========
+
+async def handle_gmail_on(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle /gmail_on command - Start Gmail monitoring"""
+    global gmail_monitoring_state
+
+    if gmail_monitoring_state["enabled"]:
+        await reply_text(update,
+            "🟡 **Gmail 감시가 이미 실행 중이에요!**\n"
+            f"- 현재까지 {gmail_monitoring_state['total_emails']}개 메일 처리됨\n"
+            "- `/gmail_status`로 상세 상태 확인")
+        return
+
+    # Test Gmail connection
+    test_msg = await reply_text(update, "📧 Gmail 연결 테스트 중...")
+
+    try:
+        # Add backend to path for Gmail handlers
+        import sys
+        import os
+        backend_path = os.path.join(os.path.dirname(__file__))
+        if backend_path not in sys.path:
+            sys.path.insert(0, backend_path)
+
+        from backend.services.gmail import GmailService
+
+        gmail_service = GmailService()
+        if not gmail_service.authenticate():
+            await context.bot.edit_message_text(
+                chat_id=update.effective_chat.id,
+                message_id=test_msg.message_id,
+                text="❌ Gmail 인증 실패. gmail_credentials.json 파일을 확인해주세요.\n\n"
+                     "📋 설정 방법:\n"
+                     "1. https://console.cloud.google.com/ 접속\n"
+                     "2. Gmail API 활성화\n"
+                     "3. OAuth 2.0 클라이언트 ID 생성\n"
+                     "4. 다운로드한 파일을 gmail_credentials.json으로 저장"
+            )
+            return
+
+        # Test with 1 email
+        test_emails = gmail_service.get_recent_emails(max_results=1)
+
+        await context.bot.edit_message_text(
+            chat_id=update.effective_chat.id,
+            message_id=test_msg.message_id,
+            text="✅ Gmail 연결 성공! 감시를 시작합니다..."
+        )
+
+        # Start monitoring
+        gmail_monitoring_state["enabled"] = True
+        gmail_monitoring_state["total_emails"] = 0
+        gmail_monitoring_state["start_time"] = datetime.now().isoformat()
+        start_gmail_monitoring()
+
+        await asyncio.sleep(1)
+
+        final_msg = """
+🟢 **Gmail 실시간 감시 시작!**
+
+📋 **감시 설정**:
+- 확인 주기: 5분마다
+- 대상: 읽지 않은 메일만
+- AI 요약: Gemini 2.5 Flash
+- 즉시 텔레그램 알림
+
+💡 **명령어**:
+- `/gmail_off` - 감시 중지
+- `/gmail_status` - 상태 확인
+- `/gmail_list` - 최근 메일 목록
+        """.strip()
+
+        await context.bot.edit_message_text(
+            chat_id=update.effective_chat.id,
+            message_id=test_msg.message_id,
+            text=final_msg
+        )
+
+    except Exception as e:
+        logger.error(f"Gmail start error: {e}")
+        await context.bot.edit_message_text(
+            chat_id=update.effective_chat.id,
+            message_id=test_msg.message_id,
+            text=f"❌ Gmail 연결 실패: {str(e)[:100]}"
+        )
+
+
+async def handle_gmail_off(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle /gmail_off command - Stop Gmail monitoring"""
+    global gmail_monitoring_state
+
+    if not gmail_monitoring_state["enabled"]:
+        await reply_text(update, "🔴 Gmail 감시가 이미 중지되어 있어요!")
+        return
+
+    gmail_monitoring_state["enabled"] = False
+    total_processed = gmail_monitoring_state.get("total_emails", 0)
+
+    stop_message = f"""
+📪 **Gmail 감시 중지됨**
+
+📊 **이번 세션 통계**:
+- 처리된 메일: {total_processed}개
+- 감시 시간: {gmail_monitoring_state.get('start_time', '확인 불가')}부터
+
+💡 **재시작하려면**:
+- `/gmail_on` - 감시 다시 시작
+- `/gmail_list` - 수동으로 메일 목록 확인
+    """.strip()
+
+    await reply_text(update, stop_message)
+
+
+async def handle_gmail_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle /gmail_status command - Check Gmail monitoring status"""
+    global gmail_monitoring_state
+
+    status_icon = "🟢" if gmail_monitoring_state["enabled"] else "🔴"
+    status_text = "실행 중" if gmail_monitoring_state["enabled"] else "중지됨"
+
+    last_check = gmail_monitoring_state.get("last_check", "없음")
+    total_emails = gmail_monitoring_state.get("total_emails", 0)
+
+    # Get unread count if running
+    if gmail_monitoring_state["enabled"]:
+        try:
+            import sys
+            import os
+            backend_path = os.path.join(os.path.dirname(__file__))
+            if backend_path not in sys.path:
+                sys.path.insert(0, backend_path)
+
+            from backend.services.gmail import GmailService
+            gmail_service = GmailService()
+            if gmail_service.authenticate():
+                unread_count = gmail_service.get_unread_count()
+            else:
+                unread_count = "확인 불가"
+        except:
+            unread_count = "확인 불가"
+    else:
+        unread_count = "감시 중지됨"
+
+    status_message = f"""
+📊 **Gmail 감시 상태**
+
+{status_icon} **상태**: {status_text}
+🕒 **마지막 확인**: {last_check}
+📧 **처리된 메일**: {total_emails}개
+🔵 **현재 받은편지함**: {unread_count}개
+
+⚙️ **설정**:
+- 확인 주기: 5분마다
+- 대상: 읽지 않은 메일만
+- AI 요약: Gemini 2.5 Flash
+
+💡 **사용 가능한 명령어**:
+- `/gmail_on` - 감시 시작
+- `/gmail_off` - 감시 중지
+- `/gmail_list` - 최근 메일 목록
+    """.strip()
+
+    await reply_text(update, status_message)
+
+
+async def handle_gmail_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle /gmail_list command - List recent emails"""
+    ack_msg = await reply_text(update, "📧 최근 메일 목록 가져오는 중...")
+
+    try:
+        # Add backend to path for Gmail handlers
+        import sys
+        import os
+        backend_path = os.path.join(os.path.dirname(__file__))
+        if backend_path not in sys.path:
+            sys.path.insert(0, backend_path)
+
+        from backend.services.gmail import GmailService
+
+        gmail_service = GmailService()
+        if not gmail_service.authenticate():
+            await context.bot.edit_message_text(
+                chat_id=update.effective_chat.id,
+                message_id=ack_msg.message_id,
+                text="❌ Gmail 인증 실패. 먼저 `/gmail_on`으로 인증해주세요."
+            )
+            return
+
+        # Get recent emails
+        recent_emails = gmail_service.get_recent_emails(max_results=20)
+
+        if not recent_emails:
+            await context.bot.edit_message_text(
+                chat_id=update.effective_chat.id,
+                message_id=ack_msg.message_id,
+                text="📪 읽지 않은 메일이 없어요."
+            )
+            return
+
+        # Collect email info
+        email_list = []
+        for i, email_info in enumerate(recent_emails[:10]):  # Max 10
+            email_content = gmail_service.get_email_content(email_info['id'])
+            if email_content:
+                is_unread = "🔵" if 'UNREAD' in email_info.get('labelIds', []) else "⚪"
+                email_list.append(f"""
+{i+1}. {is_unread} **{email_content['subject'][:40]}**
+   👤 {email_content['sender'][:30]}
+   🕒 {email_content['date'][:16]}
+                """.strip())
+
+        final_message = f"""
+📋 **최근 Gmail 목록** (최대 10개)
+
+{chr(10).join(email_list)}
+
+📊 **요약**:
+- 전체 확인된 메일: {len(recent_emails)}개
+- 🔵 읽지 않은 메일  ⚪ 읽은 메일
+- `/gmail_on`으로 실시간 감시 시작 가능
+        """.strip()
+
+        await context.bot.edit_message_text(
+            chat_id=update.effective_chat.id,
+            message_id=ack_msg.message_id,
+            text=final_message
+        )
+
+    except Exception as e:
+        logger.error(f"Gmail list error: {e}")
+        await context.bot.edit_message_text(
+            chat_id=update.effective_chat.id,
+            message_id=ack_msg.message_id,
+            text=f"❌ Gmail 목록 조회 중 오류가 발생했어요: {str(e)[:100]}"
+        )
+
+
+# ========== Gmail Monitoring Functions ==========
+
+def start_gmail_monitoring():
+    """Start Gmail monitoring in background thread"""
+    import threading
+    if gmail_monitoring_state["thread"] and gmail_monitoring_state["thread"].is_alive():
+        return
+
+    gmail_monitoring_state["thread"] = threading.Thread(
+        target=gmail_monitor_loop,
+        daemon=True
+    )
+    gmail_monitoring_state["thread"].start()
+    logger.info("📧 Gmail monitoring started")
+
+
+def gmail_monitor_loop():
+    """Background Gmail monitoring loop"""
+    import time
+
+    try:
+        from backend.services.gmail import GmailService
+        gmail_service = GmailService()
+
+        if not gmail_service.authenticate():
+            logger.error("Gmail authentication failed")
+            return
+
+        logger.info("📧 Gmail monitoring worker started")
+
+        while gmail_monitoring_state["enabled"]:
+            try:
+                logger.info("📧 Checking for new emails...")
+
+                # Get recent emails
+                recent_emails = gmail_service.get_recent_emails(max_results=20)
+                new_emails = []
+
+                for email_info in recent_emails:
+                    email_id = email_info['id']
+
+                    # Check if already processed
+                    if email_id not in gmail_service.processed_emails:
+                        email_content = gmail_service.get_email_content(email_id)
+                        if email_content:
+                            new_emails.append(email_content)
+                            gmail_service.processed_emails.add(email_id)
+
+                # Process new emails
+                if new_emails:
+                    logger.info(f"📧 Found {len(new_emails)} new emails")
+                    gmail_monitoring_state["total_emails"] += len(new_emails)
+
+                    for email_data in new_emails:
+                        asyncio.run_coroutine_threadsafe(
+                            process_and_send_email(email_data),
+                            asyncio.get_event_loop()
+                        )
+
+                # Save processed emails
+                gmail_service.save_processed_emails()
+                gmail_monitoring_state["last_check"] = datetime.now().strftime("%H:%M:%S")
+
+                # Wait 5 minutes
+                for _ in range(300):  # Check every second for shutdown
+                    if not gmail_monitoring_state["enabled"]:
+                        break
+                    time.sleep(1)
+
+            except Exception as e:
+                logger.error(f"Gmail monitoring error: {e}")
+                time.sleep(60)  # Wait 1 minute on error
+
+        logger.info("📧 Gmail monitoring worker stopped")
+
+    except Exception as e:
+        logger.error(f"Gmail monitoring loop error: {e}")
+
+
+async def process_and_send_email(email_data):
+    """Process email with Gemini and send to Telegram"""
+    if not gemini_model:
+        return
+
+    try:
+        # Create progress message
+        progress_msg = await _app_instance.bot.send_message(
+            chat_id=_app_instance.chat_ids[0] if _app_instance.chat_ids else None,
+            text="📧 새 메일 분석 중..."
+        )
+
+        # Gemini summarization
+        prompt = f"""
+        다음 이메일을 한국어로 요약해주세요:
+
+        보낸사람: {email_data['sender']}
+        제목: {email_data['subject']}
+        내용: {email_data['body']}
+
+        요약 형식:
+        - 핵심 내용 (2-3문장)
+        - 중요도 (높음/보통/낮음)
+        - 필요한 액션이 있다면 언급
+        """
+
+        response = gemini_model.generate_content(prompt)
+        summary = format_plain(response.text)
+
+        # Final message
+        final_message = f"""
+📧 **새 메일 요약**
+
+👤 **보낸사람**: {email_data['sender']}
+📝 **제목**: {email_data['subject']}
+🕒 **시간**: {email_data['date']}
+
+🤖 **AI 요약**:
+{summary}
+        """.strip()
+
+        await _app_instance.bot.edit_message_text(
+            chat_id=progress_msg.chat_id,
+            message_id=progress_msg.message_id,
+            text=final_message
+        )
+
+    except Exception as e:
+        logger.error(f"Email processing error: {e}")
+
+
+# ========== Calendar Handlers ==========
+
+async def handle_cal_on(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle /cal_on command - Start Calendar monitoring"""
+    global calendar_monitoring_state
+
+    if calendar_monitoring_state["enabled"]:
+        await reply_text(update,
+            "🟡 **Calendar 감시가 이미 실행 중이에요!**\n"
+            f"- 현재까지 {calendar_monitoring_state['total_alerts']}개 알림 보냄\n"
+            "- `/cal_status`로 상세 상태 확인")
+        return
+
+    # Test Calendar connection
+    test_msg = await reply_text(update, "🗓️ Calendar 연결 테스트 중...")
+
+    try:
+        # Add backend to path for Calendar handlers
+        import sys
+        import os
+        backend_path = os.path.join(os.path.dirname(__file__))
+        if backend_path not in sys.path:
+            sys.path.insert(0, backend_path)
+
+        from backend.services.calendar import get_calendar_service
+
+        # Test Calendar connection
+        calendar_service = get_calendar_service()
+        test_events = calendar_service.get_today_events()
+
+        await context.bot.edit_message_text(
+            chat_id=update.effective_chat.id,
+            message_id=test_msg.message_id,
+            text="✅ Calendar 연결 성공! 감시를 시작합니다..."
+        )
+
+        # Start monitoring
+        calendar_monitoring_state["enabled"] = True
+        calendar_monitoring_state["total_alerts"] = 0
+        calendar_monitoring_state["start_time"] = datetime.now().isoformat()
+        calendar_monitoring_state["alerted_events"] = set()
+        start_calendar_monitoring()
+
+        await asyncio.sleep(1)
+
+        final_msg = """
+🟢 **Calendar 실시간 감시 시작!**
+
+📋 **감시 설정**:
+- 확인 주기: 5분마다
+- 대상: 다가오는 일정 (30분 전 알림)
+- AI 분석: Gemini 2.5 Flash
+- 즉시 텔레그램 알림
+
+💡 **명령어**:
+- `/cal_off` - 감시 중지
+- `/cal_status` - 상태 확인
+- `/cal_today` - 오늘 일정
+- `/cal_tomorrow` - 내일 일정
+- `/cal_week` - 이번 주 일정
+- `/cal_search <키워드>` - 일정 검색
+        """.strip()
+
+        await context.bot.edit_message_text(
+            chat_id=update.effective_chat.id,
+            message_id=test_msg.message_id,
+            text=final_msg
+        )
+
+    except Exception as e:
+        logger.error(f"Calendar start error: {e}")
+        await context.bot.edit_message_text(
+            chat_id=update.effective_chat.id,
+            message_id=test_msg.message_id,
+            text=f"❌ Calendar 연결 실패: {str(e)[:100]}"
+        )
+
+
+async def handle_cal_off(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle /cal_off command - Stop Calendar monitoring"""
+    global calendar_monitoring_state
+
+    if not calendar_monitoring_state["enabled"]:
+        await reply_text(update, "🔴 Calendar 감시가 이미 중지되어 있어요!")
+        return
+
+    calendar_monitoring_state["enabled"] = False
+    total_alerts = calendar_monitoring_state.get("total_alerts", 0)
+
+    stop_message = f"""
+📅 **Calendar 감시 중지됨**
+
+📊 **이번 세션 통계**:
+- 보낸 알림: {total_alerts}개
+- 감시 시간: {calendar_monitoring_state.get('start_time', '확인 불가')}부터
+
+💡 **재시작하려면**:
+- `/cal_on` - 감시 다시 시작
+- `/cal_today` - 수동으로 오늘 일정 확인
+    """.strip()
+
+    await reply_text(update, stop_message)
+
+
+async def handle_cal_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle /cal_status command - Check Calendar monitoring status"""
+    global calendar_monitoring_state
+
+    status_icon = "🟢" if calendar_monitoring_state["enabled"] else "🔴"
+    status_text = "실행 중" if calendar_monitoring_state["enabled"] else "중지됨"
+
+    last_check = calendar_monitoring_state.get("last_check", "없음")
+    total_alerts = calendar_monitoring_state.get("total_alerts", 0)
+
+    # Get today's events if running
+    if calendar_monitoring_state["enabled"]:
+        try:
+            import sys
+            import os
+            backend_path = os.path.join(os.path.dirname(__file__))
+            if backend_path not in sys.path:
+                sys.path.insert(0, backend_path)
+
+            from backend.services.calendar import get_calendar_service
+            calendar_service = get_calendar_service()
+            today_events = calendar_service.get_today_events()
+            today_count = len(today_events)
+        except:
+            today_count = "확인 불가"
+    else:
+        today_count = "감시 중지됨"
+
+    status_message = f"""
+📊 **Calendar 감시 상태**
+
+{status_icon} **상태**: {status_text}
+🕒 **마지막 확인**: {last_check}
+📅 **보낸 알림**: {total_alerts}개
+📋 **오늘 일정**: {today_count}개
+
+⚙️ **설정**:
+- 확인 주기: 5분마다
+- 알림: 30분 전 일정
+- AI 분석: Gemini 2.5 Flash
+
+💡 **사용 가능한 명령어**:
+- `/cal_on` - 감시 시작
+- `/cal_off` - 감시 중지
+- `/cal_today` - 오늘 일정
+- `/cal_tomorrow` - 내일 일정
+- `/cal_week` - 이번 주 일정
+- `/cal_search <키워드>` - 일정 검색
+    """.strip()
+
+    await reply_text(update, status_message)
+
+
+async def handle_cal_today(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle /cal_today command - Show today's events"""
+    ack_msg = await reply_text(update, "🗓️ 오늘 일정 조회 중...")
+
+    try:
+        # Add backend to path for Calendar handlers
+        import sys
+        import os
+        backend_path = os.path.join(os.path.dirname(__file__))
+        if backend_path not in sys.path:
+            sys.path.insert(0, backend_path)
+
+        from backend.services.calendar import get_calendar_service, format_event_list
+
+        calendar_service = get_calendar_service()
+        today_events = calendar_service.get_today_events()
+
+        result = format_event_list(today_events, "오늘의 일정")
+
+        await context.bot.edit_message_text(
+            chat_id=update.effective_chat.id,
+            message_id=ack_msg.message_id,
+            text=result
+        )
+
+    except Exception as e:
+        logger.error(f"Calendar today error: {e}")
+        await context.bot.edit_message_text(
+            chat_id=update.effective_chat.id,
+            message_id=ack_msg.message_id,
+            text=f"❌ 오늘 일정 조회 중 오류가 발생했어요: {str(e)[:100]}"
+        )
+
+
+async def handle_cal_tomorrow(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle /cal_tomorrow command - Show tomorrow's events"""
+    ack_msg = await reply_text(update, "🗓️ 내일 일정 조회 중...")
+
+    try:
+        # Add backend to path for Calendar handlers
+        import sys
+        import os
+        backend_path = os.path.join(os.path.dirname(__file__))
+        if backend_path not in sys.path:
+            sys.path.insert(0, backend_path)
+
+        from backend.services.calendar import get_calendar_service, format_event_list
+
+        calendar_service = get_calendar_service()
+        tomorrow_events = calendar_service.get_tomorrow_events()
+
+        result = format_event_list(tomorrow_events, "내일의 일정")
+
+        await context.bot.edit_message_text(
+            chat_id=update.effective_chat.id,
+            message_id=ack_msg.message_id,
+            text=result
+        )
+
+    except Exception as e:
+        logger.error(f"Calendar tomorrow error: {e}")
+        await context.bot.edit_message_text(
+            chat_id=update.effective_chat.id,
+            message_id=ack_msg.message_id,
+            text=f"❌ 내일 일정 조회 중 오류가 발생했어요: {str(e)[:100]}"
+        )
+
+
+async def handle_cal_week(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle /cal_week command - Show this week's events"""
+    ack_msg = await reply_text(update, "🗓️ 이번 주 일정 조회 중...")
+
+    try:
+        # Add backend to path for Calendar handlers
+        import sys
+        import os
+        backend_path = os.path.join(os.path.dirname(__file__))
+        if backend_path not in sys.path:
+            sys.path.insert(0, backend_path)
+
+        from backend.services.calendar import get_calendar_service, format_event_list
+
+        calendar_service = get_calendar_service()
+        week_events = calendar_service.get_week_events()
+
+        result = format_event_list(week_events, "이번 주 일정")
+
+        await context.bot.edit_message_text(
+            chat_id=update.effective_chat.id,
+            message_id=ack_msg.message_id,
+            text=result
+        )
+
+    except Exception as e:
+        logger.error(f"Calendar week error: {e}")
+        await context.bot.edit_message_text(
+            chat_id=update.effective_chat.id,
+            message_id=ack_msg.message_id,
+            text=f"❌ 이번 주 일정 조회 중 오류가 발생했어요: {str(e)[:100]}"
+        )
+
+
+async def handle_cal_search(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle /cal_search command - Search for events"""
+    args = context.args
+    if not args:
+        await reply_text(update, "사용법: `/cal_search <검색어>`\n\n예: `/cal_search 미팅`")
+        return
+
+    search_query = " ".join(args)
+    ack_msg = await reply_text(update, f"🔍 '{search_query}' 일정 검색 중...")
+
+    try:
+        # Add backend to path for Calendar handlers
+        import sys
+        import os
+        backend_path = os.path.join(os.path.dirname(__file__))
+        if backend_path not in sys.path:
+            sys.path.insert(0, backend_path)
+
+        from backend.services.calendar import get_calendar_service, format_event_list
+
+        calendar_service = get_calendar_service()
+        search_results = calendar_service.search_events(search_query, max_results=20)
+
+        result = format_event_list(search_results, f"검색 결과: {search_query}")
+
+        await context.bot.edit_message_text(
+            chat_id=update.effective_chat.id,
+            message_id=ack_msg.message_id,
+            text=result
+        )
+
+    except Exception as e:
+        logger.error(f"Calendar search error: {e}")
+        await context.bot.edit_message_text(
+            chat_id=update.effective_chat.id,
+            message_id=ack_msg.message_id,
+            text=f"❌ 일정 검색 중 오류가 발생했어요: {str(e)[:100]}"
+        )
+
+
+# ========== Calendar Monitoring Functions ==========
+
+def start_calendar_monitoring():
+    """Start Calendar monitoring in background thread"""
+    import threading
+    if calendar_monitoring_state["thread"] and calendar_monitoring_state["thread"].is_alive():
+        return
+
+    calendar_monitoring_state["thread"] = threading.Thread(
+        target=calendar_monitor_loop,
+        daemon=True
+    )
+    calendar_monitoring_state["thread"].start()
+    logger.info("🗓️ Calendar monitoring started")
+
+
+def calendar_monitor_loop():
+    """Background Calendar monitoring loop"""
+    import time
+
+    try:
+        # Add backend to path for Thread
+        import sys
+        import os
+        backend_path = os.path.join(os.path.dirname(__file__))
+        if backend_path not in sys.path:
+            sys.path.insert(0, backend_path)
+
+        from backend.services.calendar import get_calendar_service, get_upcoming_events
+
+        calendar_service = get_calendar_service()
+
+        logger.info("🗓️ Calendar monitoring worker started")
+
+        while calendar_monitoring_state["enabled"]:
+            try:
+                logger.info("🗓️ Checking for upcoming events...")
+
+                # Get events in next 30 minutes
+                upcoming_events = get_upcoming_events(minutes_ahead=30)
+                new_alerts = []
+
+                for event in upcoming_events:
+                    event_id = event.get('id', '')
+
+                    # Check if already alerted
+                    if event_id and event_id not in calendar_monitoring_state["alerted_events"]:
+                        new_alerts.append(event)
+                        calendar_monitoring_state["alerted_events"].add(event_id)
+
+                # Send notifications for new alerts
+                if new_alerts:
+                    logger.info(f"🗓️ Found {len(new_alerts)} upcoming events")
+                    calendar_monitoring_state["total_alerts"] += len(new_alerts)
+
+                    for event_data in new_alerts:
+                        asyncio.run_coroutine_threadsafe(
+                            process_and_send_calendar_alert(event_data),
+                            asyncio.get_event_loop()
+                        )
+
+                calendar_monitoring_state["last_check"] = datetime.now().strftime("%H:%M:%S")
+
+                # Wait 5 minutes
+                for _ in range(300):  # Check every second for shutdown
+                    if not calendar_monitoring_state["enabled"]:
+                        break
+                    time.sleep(1)
+
+            except Exception as e:
+                logger.error(f"Calendar monitoring error: {e}")
+                time.sleep(60)  # Wait 1 minute on error
+
+        logger.info("🗓️ Calendar monitoring worker stopped")
+
+    except Exception as e:
+        logger.error(f"Calendar monitoring loop error: {e}")
+
+
+async def process_and_send_calendar_alert(event_data):
+    """Process event and send alert to Telegram"""
+    try:
+        # Get start and end time
+        start = event_data.get('start', {})
+        end = event_data.get('end', {})
+        
+        # Format time
+        time_str = ""
+        if 'dateTime' in start:
+            start_dt = datetime.fromisoformat(start['dateTime'].replace('Z', '+00:00'))
+            end_dt = datetime.fromisoformat(end['dateTime'].replace('Z', '+00:00'))
+            time_str = f"{start_dt.strftime('%H:%M')} - {end_dt.strftime('%H:%M')}"
+        else:
+            time_str = "종일"
+
+        title = event_data.get('summary', '제목 없음')
+        location = event_data.get('location', '')
+        description = event_data.get('description', '')
+
+        # Create message
+        alert_message = f"""
+🔔 **30분 후 일정 알림**
+
+📅 **일정**: {title}
+⏰ **시간**: {time_str}
+        """.strip()
+
+        if location:
+            alert_message += f"\n📍 **장소**: {location}"
+
+        if description:
+            desc_preview = description[:100]
+            if len(description) > 100:
+                desc_preview += "..."
+            alert_message += f"\n📝 **설명**: {desc_preview}"
+
+        alert_message += "\n\n⏰ 준비하세요!"
+
+        # Send to all active chats (for now, broadcast to first chat)
+        if _app_instance and _app_instance.chat_ids:
+            for chat_id in _app_instance.chat_ids:
+                try:
+                    await _app_instance.bot.send_message(
+                        chat_id=chat_id,
+                        text=alert_message
+                    )
+                except Exception as e:
+                    logger.error(f"Failed to send calendar alert to {chat_id}: {e}")
+
+    except Exception as e:
+        logger.error(f"Calendar alert processing error: {e}")
 
 
 async def monitor_drive_changes():
@@ -878,6 +1728,13 @@ async def handle_document_auto_save(update: Update, context: ContextTypes.DEFAUL
     progress_messages.append(await update.message.reply_text("📁 파일 다운로드 완료. 드라이브 저장 중... [30%]"))
 
     try:
+        # Add backend to path for Telegram handlers
+        import sys
+        import os
+        backend_path = os.path.join(os.path.dirname(__file__))
+        if backend_path not in sys.path:
+            sys.path.insert(0, backend_path)
+
         from backend.services.drive_sync import upload_file
 
         # Upload to Google Drive
@@ -966,6 +1823,17 @@ def main():
     app.add_handler(CommandHandler("drivelist", handle_drive_list))
     app.add_handler(CommandHandler("driveget", handle_drive_get))
     app.add_handler(CommandHandler("drivesync", handle_drive_sync))
+    app.add_handler(CommandHandler("gmail_on", handle_gmail_on))
+    app.add_handler(CommandHandler("gmail_off", handle_gmail_off))
+    app.add_handler(CommandHandler("gmail_status", handle_gmail_status))
+    app.add_handler(CommandHandler("gmail_list", handle_gmail_list))
+    app.add_handler(CommandHandler("cal_on", handle_cal_on))
+    app.add_handler(CommandHandler("cal_off", handle_cal_off))
+    app.add_handler(CommandHandler("cal_status", handle_cal_status))
+    app.add_handler(CommandHandler("cal_today", handle_cal_today))
+    app.add_handler(CommandHandler("cal_tomorrow", handle_cal_tomorrow))
+    app.add_handler(CommandHandler("cal_week", handle_cal_week))
+    app.add_handler(CommandHandler("cal_search", handle_cal_search))
 
     app.add_handler(MessageHandler(filters.Document.ALL, handle_document_auto_save))
     app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
