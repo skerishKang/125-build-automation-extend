@@ -7,6 +7,28 @@ on:
     branches: [ "main" ]
 
 jobs:
+  security-scan:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Run sensitive file check
+        run: |
+          echo "🔍 Checking for sensitive files..."
+          if [ -f "tools/check_secrets.py" ]; then
+            python tools/check_secrets.py
+          else
+            echo "⚠️  Security scan script not found, using alternative method"
+            # Alternative: Check git status
+            if git ls-files --error-unmatch .env gmail_credentials.json service_account.json 2>/dev/null; then
+              echo "🚨 DANGER: Sensitive files are tracked by git!"
+              exit 1
+            else
+              echo "✅ No sensitive files in git tracking"
+            fi
+          fi
+
   backend-test:
     runs-on: ubuntu-latest
     defaults:
@@ -99,7 +121,7 @@ jobs:
           python -c "import bot_runner; print('Bot runner import OK')"
 
   deploy:
-    needs: [backend-test, frontend-test, telegram-bot-test]
+    needs: [security-scan, backend-test, frontend-test, telegram-bot-test]
     runs-on: ubuntu-latest
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
     steps:

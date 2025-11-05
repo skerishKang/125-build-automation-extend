@@ -256,6 +256,56 @@ elif service_name == 'gmail':
 - 네트워크 연결 상태 확인
 - 백엔드 로그에서 오류 메시지 확인
 
+## 🔒 보안 및 민감 파일 보호
+
+### 자동화된 보호 체계
+이 프로젝트는 민감한 파일들의 실수 커밋/삭제를 방지하기 위해 다중 보안 체계를 적용합니다:
+
+1. **Pre-commit Hook** (`.git/hooks/pre-commit`)
+   - 커밋 전에 민감 파일 검사 자동 실행
+   - `.env`, `*_credentials.json`, `*.pickle` 등 패턴 자동 차단
+
+2. **민감 파일 검증 스크립트** (`tools/check_secrets.py`)
+   ```bash
+   python tools/check_secrets.py
+   ```
+
+3. **多重 proteção**:
+   - `.gitignore` (프로젝트 전역)
+   - `.git/info/exclude` (로컬 전용, 커밋되지 않음)
+
+### 🤖 에이전트/스크립트 작업 시 주의사항
+⚠️ **절대로 삭제하거나 커밋하지 말 것:**
+- `.env` 파일들
+- `*_credentials.json` 파일들
+- `service_account.json`
+- `gmail_credentials.json`
+- `*token*.pickle` 파일들
+
+**작업 전 체크리스트:**
+```bash
+# 민감 파일 검사 실행
+python tools/check_secrets.py
+
+# 백업 디렉터리 확인
+ls -la secrets_backup/
+```
+
+**실수로 커밋한 경우:**
+```bash
+# 파일 캐시에서 제거 (로컬 유지)
+git rm --cached <file>
+
+# 변경 사항 되돌리기
+git checkout HEAD -- <file>
+```
+
+### 파일 권한 보호 (Linux/Mac)
+```bash
+# 읽기 전용 권한 설정
+chmod 400 bots/.env gmail_credentials.json service_account.json
+```
+
 ## 📝 라이선스
 
 MIT License
