@@ -237,7 +237,7 @@ async def process_document_task(task_data: Dict):
 
         messenger.notify_progress(chat_id, "Gemini AI로 분석하는 중...")
 
-        summary = gemini.analyze_document(extracted_text)
+        summary = gemini.analyze_document(extracted_text, file_ext)
 
         result = {
             "text": extracted_text,
