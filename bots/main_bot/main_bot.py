@@ -331,6 +331,13 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     logger.info(f"Document upload: {file_name} ({file_size} bytes)")
 
+    await update.message.reply_text(
+        f"📄 문서를 받았습니다!\n"
+        f"파일: {file_name}\n"
+        f"크기: {file_size / 1024:.1f}KB\n"
+        f"분석을 시작합니다..."
+    )
+
     if not is_document_file(file_name) and not is_text_file(file_name):
         await update.message.reply_text(
             f"[WARN] 지원하지 않는 파일 형식입니다: {file_name}\n"
@@ -424,6 +431,11 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
     duration = voice.duration or 0
 
     logger.info(f"Voice message: {duration}s")
+
+    await update.message.reply_text(
+        f"🎤 음성을 받았습니다!\n"
+        f"길이: {duration}초"
+    )
 
     # Check if it's audio
     if not voice.mime_type or not voice.mime_type.startswith('audio/'):
