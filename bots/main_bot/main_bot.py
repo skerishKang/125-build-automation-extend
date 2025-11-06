@@ -1901,12 +1901,7 @@ async def send_image_result(bot: Bot, chat_id: str, task_id: str, result: Dict, 
     description = simplify_markdown(result.get("description", ""))
     analysis = simplify_markdown(result.get("analysis", ""))
 
-    # Remove length limits to show full results
-    # if len(description) > 1200:
-    #     description = description[:1200] + "\n\n...[설명 일부 생략]"
-    # if len(analysis) > 1200:
-    #     analysis = analysis[:1200] + "\n\n...[분석 일부 생략]"
-
+    # Completely removed length limits
     message = (
         "🖼️ 이미지 분석 완료!\n\n"
         f"[설명]\n{description or '(설명 없음)'}\n\n"
@@ -1918,14 +1913,13 @@ async def send_image_result(bot: Bot, chat_id: str, task_id: str, result: Dict, 
     except Exception as e:
         logger.error(f"Error sending image result: {e}")
 
-    meta = {
-        "file_id": task_info.get("file_id"),
-        "file_name": task_info.get("file_name"),
-        "mime_type": task_info.get("mime_type"),
-    }
-    register_followup_task(task_id, chat_id, "image", result, meta)
-    prefs = preference_store.get_preferences(chat_id)
-    await apply_preferences_to_task(bot, chat_id, task_id, "image", prefs)
+    # Skip follow-up tasks (disable Drive save prompts)
+    # If you want to re-enable, comment out the lines below
+    # or set mode to 'ask' in /settings
+    logger.info(f"Image result sent, skipping follow-up tasks for task_id {task_id}")
+    # register_followup_task(task_id, chat_id, "image", result, meta)
+    # prefs = preference_store.get_preferences(chat_id)
+    # await apply_preferences_to_task(bot, chat_id, task_id, "image", prefs)
 
 
 def main():
