@@ -397,11 +397,7 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
     result_payload = await wait_for_result(chat_id, timeout=1800)
     cancel_event.set()
 
-    try:
-        progress_message_id = await progress_task
-        await context.bot.delete_message(chat_id=int(chat_id), message_id=progress_message_id)
-    except Exception as exc:
-        logger.warning("Failed to delete progress message: %s", exc)
+    await progress_task
 
     if result_payload:
         await _process_result_payload(context.bot, result_payload)
@@ -498,11 +494,7 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
     result_payload = await wait_for_result(chat_id, timeout=1800)
     cancel_event.set()
 
-    try:
-        progress_message_id = await progress_task
-        await context.bot.delete_message(chat_id=int(chat_id), message_id=progress_message_id)
-    except Exception as exc:
-        logger.warning("Failed to delete progress message: %s", exc)
+    await progress_task
 
     if result_payload:
         await _process_result_payload(context.bot, result_payload)
@@ -580,11 +572,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     result_payload = await wait_for_result(chat_id, timeout=1800)
     cancel_event.set()
 
-    try:
-        progress_message_id = await progress_task
-        await context.bot.delete_message(chat_id=int(chat_id), message_id=progress_message_id)
-    except Exception as exc:
-        logger.warning("Failed to delete progress message: %s", exc)
+    await progress_task
 
     if result_payload:
         await _process_result_payload(context.bot, result_payload)
