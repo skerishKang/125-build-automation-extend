@@ -24,10 +24,11 @@ except ImportError:
 
 logger = logging.getLogger("gmail_service")
 
-# Load .env file from project root
+# Load .env file from bots directory
 def load_env():
-    """Manually load .env file from project root"""
-    env_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), '..', '.env')
+    """Manually load .env file from bots directory"""
+    # Navigate from backend/services/ to bots/.env
+    env_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), '..', 'bots', '.env')
     if os.path.exists(env_path):
         with open(env_path, 'r', encoding='utf-8') as f:
             for line in f:
