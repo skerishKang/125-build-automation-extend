@@ -24,6 +24,22 @@ except ImportError:
 
 logger = logging.getLogger("gmail_service")
 
+# Load .env file from project root
+def load_env():
+    """Manually load .env file from project root"""
+    env_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), '..', '.env')
+    if os.path.exists(env_path):
+        with open(env_path, 'r', encoding='utf-8') as f:
+            for line in f:
+                line = line.strip()
+                if line and not line.startswith('#') and '=' in line:
+                    key, value = line.split('=', 1)
+                    if os.getenv(key) is None:
+                        os.environ[key] = value
+
+# Load env on module import
+load_env()
+
 # Gmail API scopes
 SCOPES = ['https://www.googleapis.com/auth/gmail.modify']
 
@@ -48,9 +64,12 @@ class GmailService:
 
     def authenticate(self):
         """Authenticate with Gmail API using OAuth2"""
+        # Check if service account should be bypassed
+        use_sa = os.getenv('GMAIL_USE_SERVICE_ACCOUNT', 'true').lower() == 'true'
+
         # 1) Try service account credentials first (for background/daemon usage)
         sa_path = GMAIL_SERVICE_ACCOUNT_FILE if GMAIL_SERVICE_ACCOUNT_FILE and os.path.exists(GMAIL_SERVICE_ACCOUNT_FILE) else None
-        if sa_path:
+        if sa_path and use_sa:
             try:
                 creds = service_account.Credentials.from_service_account_file(sa_path, scopes=SCOPES)
                 if GMAIL_SERVICE_ACCOUNT_SUBJECT:
@@ -110,19 +129,22 @@ class GmailService:
         logger.info("Gmail authenticated via OAuth client credentials")
         return True
 
-    def get_recent_emails(self, max_results: int = 10) -> List[Dict[str, Any]]:
-        """Get recent emails from Gmail"""
+    def get_recent_emails(self, max_results: int = 10, unread_only: bool = True) -> List[Dict[str, Any]]:
+        """Get recent emails from Gmail."""
         if not self.service:
             logger.error("Gmail service not authenticated")
             return []
 
         try:
             # Get recent messages
-            result = self.service.users().messages().list(
-                userId='me',
-                maxResults=max_results,
-                q='is:unread'  # Only unread emails
-            ).execute()
+            params = {
+                'userId': 'me',
+                'maxResults': max_results,
+            }
+            if unread_only:
+                params['q'] = 'is:unread'
+
+            result = self.service.users().messages().list(**params).execute()
 
             messages = result.get('messages', [])
             logger.info(f"Found {len(messages)} unread emails")
@@ -199,6 +221,24 @@ class GmailService:
         except Exception as e:
             logger.error(f"Error marking email as read: {e}")
             return False
+
+    def fetch_email_details(self, max_results: int = 3, mark_as_read: bool = False, unread_only: bool = True) -> List[Dict[str, Any]]:
+        """Retrieve detailed information for emails."""
+        details: List[Dict[str, Any]] = []
+
+        messages = self.get_recent_emails(max_results=max_results, unread_only=unread_only)
+        for message in messages:
+            message_id = message.get('id')
+            if not message_id:
+                continue
+
+            content = self.get_email_content(message_id)
+            if content:
+                details.append(content)
+                if mark_as_read and unread_only:
+                    self.mark_as_read(message_id)
+
+        return details
 
     def load_processed_emails(self) -> set:
         """Load set of already processed email IDs"""
