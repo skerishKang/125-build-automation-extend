@@ -1173,6 +1173,7 @@ async def handle_calendar_add(update: Update, context: ContextTypes.DEFAULT_TYPE
 
     await context.bot.send_message(chat_id=chat_id, text="\n".join(lines))
 async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    logger.info("handle_document entered")
     """Handle document uploads"""
     doc = update.message.document
     if not doc:
@@ -1287,6 +1288,7 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def handle_document_as_audio(update: Update, context: ContextTypes.DEFAULT_TYPE, doc):
+    logger.info("handle_document_as_audio entered")
     """Handle audio files uploaded as documents"""
     chat_id = str(update.effective_chat.id)
     filename = doc.file_name or "audio"

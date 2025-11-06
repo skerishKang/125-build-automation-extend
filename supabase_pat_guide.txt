@@ -1,0 +1,21 @@
+==========================================
+📌 Supabase Personal Access Token (PAT) 생성 가이드
+==========================================
+
+1️⃣ Supabase 대시보드 접속
+   https://supabase.com/dashboard
+
+2️⃣右上角 Avatar → "Access Tokens" 클릭
+
+3️⃣"+ Generate new token" 클릭
+
+4️⃣토큰 정보 입력:
+   - Name: Claude MCP Server
+   - Scopes: project:read, db:read, db:write (기본값)
+
+5️⃣"Generate a token" 클릭
+
+6️⃣생성된 토큰을 복사 (sgp_xxx... 형식)
+   ⚠️ 토큰은 한 번만 보여지니 바로 복사해두세요!
+
+7️⃣복사한 PAT를 제공해 주시면 됩니다.

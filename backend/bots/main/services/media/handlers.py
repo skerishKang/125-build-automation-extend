@@ -4,12 +4,18 @@ from __future__ import annotations
 
 import asyncio
 import os
+import shutil
 import tempfile
 from typing import TYPE_CHECKING, Any, List, Optional
 
 if TYPE_CHECKING:  # pragma: no cover - type hints only
     from telegram import Update
     from telegram.ext import ContextTypes
+
+
+def is_tool(name: str) -> bool:
+    """Check whether `name` is on PATH and marked as executable."""
+    return shutil.which(name) is not None
 
 
 async def handle_photo(runtime: Any, update: "Update", context: "ContextTypes.DEFAULT_TYPE") -> None:
@@ -76,6 +82,7 @@ async def handle_photo(runtime: Any, update: "Update", context: "ContextTypes.DE
 
 
 async def handle_voice(runtime: Any, update: "Update", context: "ContextTypes.DEFAULT_TYPE") -> None:
+    runtime.logger.info("handle_voice entered")
     """Handle incoming voice messages with adaptive processing."""
     GEMINI_API_KEY = runtime.GEMINI_API_KEY
     gemini_model = runtime.gemini_model
@@ -91,7 +98,8 @@ async def handle_voice(runtime: Any, update: "Update", context: "ContextTypes.DE
             "🎤 음성을 받았어요. 백그라운드에서 처리 중입니다! "
             "다른 메시지도 바로 보낼 수 있어요. 😊"
         )
-    except Exception:  # pragma: no cover - best effort ack
+    except Exception as e:  # Add 'as e' to capture the exception
+        runtime.logger.error("Failed to send initial voice acknowledgment: %s", e, exc_info=True) # Log the error
         ack_msg = None
 
     chat_id = update.effective_chat.id
@@ -161,8 +169,8 @@ async def process_voice_background(
             await save_memory(user_id, username, f"[음성] {duration:.1f}초", result)
 
     except Exception as exc:  # pragma: no cover - defensive logging
-        logger.error("Voice processing error: %s", exc)
-        error_msg = f"음성 처리 중 오류가 발생했어요: {str(exc)[:100]}"
+        logger.error("Voice processing error: %s", exc, exc_info=True)
+        error_msg = f"음성 처리 중 오류가 발생했어요: {type(exc).__name__}: {exc}"
         await context.bot.send_message(chat_id, error_msg)
     finally:
         for path in (ogg_path, wav_path):
@@ -223,6 +231,13 @@ async def process_with_whisper_gemini(
     """Process long audio with Whisper + Gemini."""
     gemini_model = runtime.gemini_model
     format_plain = runtime.format_plain
+
+    if not is_tool("ffmpeg"):
+        return (
+            "음성 처리에 필요한 `ffmpeg`가 설치되어 있지 않아요. "
+            "긴 음성 메시지를 처리하려면 시스템에 `ffmpeg`를 설치해야 합니다."
+        )
+
 
     progress_messages.append(
         await context.bot.send_message(

@@ -273,6 +273,7 @@ async def monitor_drive_changes(runtime: Any) -> None:
 
 
 async def handle_document_auto_save(runtime: Any, update: "Update", context: "ContextTypes.DEFAULT_TYPE") -> None:
+    runtime.logger.info("handle_document_auto_save entered")
     """Auto-save incoming documents to Google Drive and analyze them."""
     ActionIndicator = runtime.ActionIndicator
     ChatAction = runtime.ChatAction
@@ -286,6 +287,22 @@ async def handle_document_auto_save(runtime: Any, update: "Update", context: "Co
     doc = update.message.document
     if not doc:
         await reply_text(update, "문서를 찾을 수 없어요.")
+        return
+
+    # Check if it's an audio file - redirect to voice processing
+    file_name = doc.file_name or ""
+    audio_extensions = ['.mp3', '.wav', '.ogg', '.m4a', '.aac', '.flac', '.wma', '.opus']
+    if any(file_name.lower().endswith(ext) for ext in audio_extensions):
+        logger.info(f"Detected audio file: {file_name}, redirecting to voice processing")
+        # Send acknowledgment message
+        await update.message.reply_text(f"🎤 오디오 파일을 받았습니다!\n파일: {file_name}\n길이 분석 중...")
+        # Import and call the voice handler
+        try:
+            from backend.bots.main.services.media import handlers as media_handlers
+            await media_handlers.handle_voice(runtime, update, context)
+        except Exception as e:
+            logger.error(f"Failed to handle audio file: {e}")
+            await reply_text(update, f"오디오 처리 중 오류가 발생했습니다: {e}")
         return
 
     progress_messages = []

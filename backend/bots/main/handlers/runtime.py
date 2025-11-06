@@ -27,7 +27,7 @@ SUPABASE_KEY = os.getenv("SUPABASE_ANON_KEY")
 # logging
 from backend.core import build_application
 from backend.bots import register_main_bot_handlers
-from backend.utils.logger import configure_logging
+from backend.utils.logger import configure_logging, LOG_DIR
 from backend.bots.main.services.drive import handlers as drive_handlers
 from backend.bots.main.services.calendar import handlers as calendar_handlers
 from backend.bots.main.services.media import handlers as media_handlers
@@ -35,6 +35,8 @@ from backend.bots.main.services.text import handlers as text_handlers
 
 configure_logging()
 logger = logging.getLogger("unified_bot")
+
+logger.info(f"Logging to directory: {LOG_DIR.resolve()}")
 
 RUNTIME = sys.modules[__name__]
 

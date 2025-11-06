@@ -48,6 +48,7 @@ def register_handlers(app: Application) -> Application:
     # Message handlers
     app.add_handler(MessageHandler(filters.Document.ALL, runtime.handle_document_auto_save))
     app.add_handler(MessageHandler(filters.PHOTO, runtime.handle_photo))
+    app.add_handler(MessageHandler(filters.AUDIO, runtime.handle_voice))
     app.add_handler(MessageHandler(filters.VOICE, runtime.handle_voice))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, runtime.handle_text))
 
