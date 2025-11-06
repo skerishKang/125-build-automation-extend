@@ -600,62 +600,6 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     active_tasks.pop(chat_id, None)
 
-    # Acknowledge
-    await update.message.reply_text(
-        f"이미지 접수!\n"
-        f"사진봇이 분석 중입니다..."
-    )
-
-    # Store task info
-    active_tasks[chat_id] = {
-        "type": "image",
-        "status": "processing",
-        "file_id": file_id,
-        "start_time": datetime.now().strftime("%H:%M:%S")
-    }
-
-    # Send to image bot
-    messenger.publish_task("image", {
-        "chat_id": chat_id,
-        "image_data": {
-            "file_id": file_id
-        },
-        "user_id": str(update.effective_user.id)
-    })
-
-    logger.info(f"Sent image task to image bot for chat {chat_id}")
-
-    estimated_time = estimate_processing_time("image", {})
-    cancel_event = asyncio.Event()
-    progress_task = asyncio.create_task(
-        send_progress_updates(
-            context.bot,
-            int(chat_id),
-            "image",
-            estimated_time,
-            cancel_event,
-        )
-    )
-
-    result_payload = await wait_for_result(chat_id, timeout=1800)
-    cancel_event.set()
-
-    progress_message_id = await progress_task
-    if progress_message_id:
-        try:
-            await context.bot.delete_message(chat_id=int(chat_id), message_id=progress_message_id)
-        except Exception as exc:
-            logger.warning("Failed to delete progress message: %s", exc)
-
-    if result_payload:
-        await _process_result_payload(context.bot, result_payload)
-    else:
-        await context.bot.send_message(
-            chat_id=int(chat_id),
-            text="⏰ 이미지 처리가 예상보다 오래 걸려 중단되었어요. 다시 시도해주세요.",
-        )
-
-    active_tasks.pop(chat_id, None)
 
 
 async def _process_result_payload(bot: Bot, payload: Dict[str, Any]):
