@@ -905,8 +905,9 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Send typing indicator
     await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
 
-    # Use Gemini to generate response
-    response = gemini.analyze_text(text)
+    # Use Gemini to generate response (force Korean response)
+    prompt = "다음 텍스트에 대한 답변을 한국어로 해주세요."
+    response = gemini.analyze_text(prompt + "\n\n" + text)
 
     if response:
         # Split long messages
@@ -1182,10 +1183,16 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
     file_size = doc.file_size or 0
 
     logger.info(f"Document upload: {filename} ({file_size} bytes)")
+    logger.info(f"Document MIME type: {getattr(doc, 'mime_type', 'N/A')}")
+
+    # Check if it's an audio file - send to audio bot
+    if is_audio_file(filename):
+        logger.info(f"Detected audio file: {filename}, sending to audio bot")
+        return await handle_document_as_audio(update, context, doc)
 
     if not is_document_file(filename) and not is_text_file(filename):
         await update.message.reply_text(
-            f"⚠️ WARN: {filename}\n지원 형식: PDF, DOCX, TXT, CSV"
+            f"⚠️ WARN: {filename}\n지원 형식: PDF, DOCX, TXT, CSV, 오디오 파일"
         )
         return
 
@@ -1277,9 +1284,109 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     asyncio.create_task(process_document_result())
     return
+
+
+async def handle_document_as_audio(update: Update, context: ContextTypes.DEFAULT_TYPE, doc):
+    """Handle audio files uploaded as documents"""
+    chat_id = str(update.effective_chat.id)
+    filename = doc.file_name or "audio"
+    file_size = doc.file_size or 0
+
+    logger.info(f"Audio document upload: {filename} ({file_size} bytes)")
+
+    await update.message.reply_text(
+        f"🎤 오디오 파일을 받았습니다!\n파일: {filename}\n크기: {file_size / 1024:.1f}KB"
+    )
+
+    task_id = str(uuid4())
+    active_tasks.setdefault(chat_id, {})[task_id] = {
+        "type": "audio",
+        "status": "processing",
+        "file_name": filename,
+        "file_id": doc.file_id,
+        "mime_type": getattr(doc, "mime_type", "audio/mpeg"),
+        "start_time": datetime.now().strftime("%H:%M:%S"),
+    }
+
+    file_path = None
+
+    try:
+        file = await context.bot.get_file(doc.file_id)
+        import tempfile
+        import time
+        temp_dir = tempfile.gettempdir()
+        file_path = os.path.join(temp_dir, f"audio_doc_{chat_id}_{int(time.time())}_{filename}")
+        await file.download_to_drive(file_path)
+        logger.info(f"Downloaded audio document to: {file_path}")
+
+    except Exception as exc:
+        logger.error(f"Error downloading audio document: {exc}")
+        await update.message.reply_text("❌ ERROR: 오디오 파일 다운로드 실패.")
+        chat_tasks = active_tasks.get(chat_id, {})
+        chat_tasks.pop(task_id, None)
+        if not chat_tasks:
+            active_tasks.pop(chat_id, None)
+        return
+
+    messenger.publish_task(
+        "audio",
+        {
+            "task_id": task_id,
+            "chat_id": chat_id,
+            "voice_data": {
+                "file_path": file_path,
+                "duration": 0,  # Duration unknown for uploaded files
+                "mime_type": getattr(doc, "mime_type", "audio/mpeg"),
+            },
+            "user_id": str(update.effective_user.id),
+        },
+    )
+    logger.info(f"Sent audio document task to audio bot for chat {chat_id}")
+
+    # Use default estimation for unknown duration
+    estimated_time = estimate_processing_time("audio", {"duration": 60})
+    cancel_event = asyncio.Event()
+    progress_task = asyncio.create_task(
+        send_progress_updates(context.bot, int(chat_id), task_id, "audio", estimated_time, cancel_event)
+    )
+
+    async def process_audio_result():
+        try:
+            result_payload = await wait_for_result(task_id, timeout=1800)
+        finally:
+            cancel_event.set()
+            await progress_task
+
+        if result_payload:
+            await _process_result_payload(context.bot, result_payload)
+        else:
+            await context.bot.send_message(
+                chat_id=int(chat_id),
+                text="⏰ 오디오 처리가 예상보다 오래 걸려 중단되었어요. 다시 시도해주세요.",
+            )
+            try:
+                os.remove(file_path)
+            except Exception:
+                pass
+
+        chat_tasks = active_tasks.get(chat_id, {})
+        chat_tasks.pop(task_id, None)
+        if not chat_tasks:
+            active_tasks.pop(chat_id, None)
+
+    asyncio.create_task(process_audio_result())
+    return
+
+
 async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle voice messages"""
     logger.info(">>> handle_voice CALLED! <<<")
+    logger.info(f"update.message type: {type(update.message)}")
+    logger.info(f"update.message content: {update.message}")
+    logger.info(f"update.message.voice: {update.message.voice}")
+    logger.info(f"update.message.audio: {getattr(update.message, 'audio', 'N/A')}")
+    logger.info(f"update.message.document: {getattr(update.message, 'document', 'N/A')}")
+
     voice = update.message.voice
     logger.info(f"voice object: {voice}")
 
@@ -1794,10 +1901,11 @@ async def send_image_result(bot: Bot, chat_id: str, task_id: str, result: Dict, 
     description = simplify_markdown(result.get("description", ""))
     analysis = simplify_markdown(result.get("analysis", ""))
 
-    if len(description) > 1200:
-        description = description[:1200] + "\n\n...[설명 일부 생략]"
-    if len(analysis) > 1200:
-        analysis = analysis[:1200] + "\n\n...[분석 일부 생략]"
+    # Remove length limits to show full results
+    # if len(description) > 1200:
+    #     description = description[:1200] + "\n\n...[설명 일부 생략]"
+    # if len(analysis) > 1200:
+    #     analysis = analysis[:1200] + "\n\n...[분석 일부 생략]"
 
     message = (
         "🖼️ 이미지 분석 완료!\n\n"
