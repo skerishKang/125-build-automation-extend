@@ -181,7 +181,7 @@ class GmailService:
                 'subject': subject,
                 'sender': sender,
                 'date': date,
-                'body': body[:2000]  # Limit to 2000 chars
+                'body': body[:5000]  # Limit to 5000 chars for full email preview
             }
 
         except Exception as e:
@@ -203,15 +203,41 @@ class GmailService:
                     data = part['body'].get('data', '')
                     if data and not body:
                         html_body = base64.urlsafe_b64decode(data).decode('utf-8', errors='ignore')
-                        # Simple HTML to text conversion
-                        import re
-                        body = re.sub('<[^<]+?>', '', html_body)
+                        body = self._html_to_text(html_body)
         elif 'body' in payload:
             data = payload['body'].get('data', '')
             if data:
                 body = base64.urlsafe_b64decode(data).decode('utf-8', errors='ignore')
 
         return body
+
+    def _html_to_text(self, html: str) -> str:
+        """Convert HTML to plain text"""
+        import re
+
+        # Remove HTML comments
+        html = re.sub(r'<!--.*?-->', '', html, flags=re.DOTALL)
+
+        # Remove script and style tags
+        html = re.sub(r'<script[^>]*>.*?</script>', '', html, flags=re.DOTALL | re.IGNORECASE)
+        html = re.sub(r'<style[^>]*>.*?</style>', '', html, flags=re.DOTALL | re.IGNORECASE)
+
+        # Remove all remaining tags
+        html = re.sub(r'<[^>]+?>', ' ', html)
+
+        # Decode HTML entities
+        html = html.replace('&nbsp;', ' ')
+        html = html.replace('&lt;', '<')
+        html = html.replace('&gt;', '>')
+        html = html.replace('&amp;', '&')
+        html = html.replace('&quot;', '"')
+        html = html.replace('&#39;', "'")
+
+        # Clean up whitespace
+        html = re.sub(r'\s+', ' ', html)
+        html = html.strip()
+
+        return html
 
     def mark_as_read(self, message_id: str) -> bool:
         """Mark email as read"""
