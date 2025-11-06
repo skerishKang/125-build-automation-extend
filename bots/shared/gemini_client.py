@@ -4,6 +4,7 @@ Gemini 2.5 Flash Client - Shared AI Analysis
 import google.generativeai as genai
 import logging
 import os
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 from typing import Any, Optional, Union
 
 logger = logging.getLogger("gemini_client")
@@ -65,7 +66,7 @@ class GeminiAnalyzer:
             logger.error(f"Audio analysis error: {e}")
             return None
 
-    def analyze_document(self, content: str, doc_type: str) -> str:
+    def analyze_document(self, content: str, doc_type: str = "default") -> str:
         """Analyze document with appropriate prompt"""
         if not self.enabled:
             return "Gemini AI not configured"
@@ -76,10 +77,13 @@ class GeminiAnalyzer:
             "txt": "이 텍스트를 분석하고 핵심 내용을 요약해주세요.",
             "csv": "이 데이터를 분석하고 주요 인사이트를 제공해주세요.",
             "md": "이 마크다운 문서를 분석하고 핵심 내용을 요약해주세요.",
+            "html": "이 HTML 문서를 분석하고 핵심 내용을 요약해주세요.",
+            "htm": "이 HTML 문서를 분석하고 핵심 내용을 요약해주세요.",
             "default": "이 문서를 분석하고 핵심 내용을 요약해주세요."
         }
 
-        prompt = prompts.get(doc_type.lower(), prompts["default"])
+        normalized_type = (doc_type or "default").lower().lstrip(".")
+        prompt = prompts.get(normalized_type, prompts["default"])
 
         try:
             result = self.model.generate_content(f"{prompt}\n\n{content}")
@@ -128,8 +132,18 @@ class GeminiAnalyzer:
                     image_data = image_file.read()
 
             image_part = {"mime_type": "image/jpeg", "data": image_data}
-            result = self.model.generate_content([prompt, image_part])
+
+            def _generate():
+                return self.model.generate_content([prompt, image_part])
+
+            with ThreadPoolExecutor(max_workers=1) as executor:
+                future = executor.submit(_generate)
+                result = future.result(timeout=60)
+
             return result.text.strip()
+        except FuturesTimeoutError:
+            logger.error("Image analysis timed out after 60 seconds")
+            return "이미지 분석 중 시간 초과가 발생했습니다."
         except Exception as e:
             logger.error(f"Image analysis error: {e}")
             return f"Error analyzing image: {str(e)}"

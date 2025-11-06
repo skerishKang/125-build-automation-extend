@@ -94,7 +94,7 @@ async def process_image_task(task_data: Dict):
         messenger.notify_progress(chat_id, "이미지를 분석하는 중...")
 
         description = gemini.analyze_image_description(file_path)
-        analysis = gemini.analyze_image_description(file_path)
+        analysis = description
 
         result = {
             "description": description,
@@ -115,7 +115,9 @@ async def process_image_task(task_data: Dict):
         logger.error(f"Error processing image task: {e}")
 
         error_result = {
-            "error": str(e)
+            "error": str(e),
+            "description": f"이미지 분석 중 오류가 발생했습니다: {str(e)}",
+            "analysis": "분석을 완료할 수 없습니다."
         }
         messenger.send_result(data.get('chat_id'), error_result)
 

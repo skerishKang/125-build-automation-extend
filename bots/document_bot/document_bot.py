@@ -135,6 +135,33 @@ def extract_text_from_txt(file_path: str) -> str:
         raise
 
 
+def extract_text_from_html(file_path: str) -> str:
+    """Extract visible text from HTML file"""
+    try:
+        import chardet
+        from bs4 import BeautifulSoup
+
+        with open(file_path, 'rb') as file:
+            raw_data = file.read()
+            encoding = chardet.detect(raw_data)['encoding'] or 'utf-8'
+
+        soup = BeautifulSoup(raw_data.decode(encoding, errors='ignore'), 'html.parser')
+
+        for tag in soup(['script', 'style', 'noscript']):
+            tag.decompose()
+
+        text = soup.get_text(separator='\n')
+        lines = [line.strip() for line in text.splitlines() if line.strip()]
+        cleaned_text = "\n".join(lines)
+
+        logger.info(f"Extracted {len(cleaned_text)} characters from HTML")
+        return cleaned_text
+
+    except Exception as e:
+        logger.error(f"Error extracting HTML text: {e}")
+        raise
+
+
 def extract_text_from_csv(file_path: str) -> str:
     """Extract text from CSV file"""
     try:
@@ -214,6 +241,7 @@ async def process_document_task(task_data: Dict):
         messenger.notify_progress(chat_id, "텍스트를 추출하는 중...")
 
         file_ext = os.path.splitext(file_name)[1].lower()
+        doc_type = file_ext.lstrip('.') if file_ext else 'txt'
         extracted_text = ""
 
         if file_ext == '.pdf':
@@ -228,8 +256,12 @@ async def process_document_task(task_data: Dict):
             extracted_text = extract_text_from_xlsx(file_path)
         elif file_ext == '.pptx':
             extracted_text = extract_text_from_pptx(file_path)
+        elif file_ext in ['.html', '.htm']:
+            extracted_text = extract_text_from_html(file_path)
+            doc_type = 'html'
         else:
             extracted_text = extract_text_from_txt(file_path)
+            doc_type = 'txt'
 
         max_length = 10000
         if len(extracted_text) > max_length:
@@ -237,7 +269,7 @@ async def process_document_task(task_data: Dict):
 
         messenger.notify_progress(chat_id, "Gemini AI로 분석하는 중...")
 
-        summary = gemini.analyze_document(extracted_text, file_ext)
+        summary = gemini.analyze_document(extracted_text, doc_type)
 
         result = {
             "text": extracted_text,

@@ -17,12 +17,25 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
 from dotenv import load_dotenv
 load_dotenv()
 
-from telegram import Update, Bot
+from telegram import Update, Bot, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.constants import ChatAction
-from telegram.ext import Application, CommandHandler, MessageHandler, ContextTypes, CallbackContext, filters
+from telegram.ext import (
+    Application,
+    CommandHandler,
+    MessageHandler,
+    CallbackQueryHandler,
+    ContextTypes,
+    CallbackContext,
+    filters,
+)
 
 from bots.shared.redis_utils import BotMessenger, REDIS_ENABLED  # type: ignore
 from bots.shared.gemini_client import GeminiAnalyzer  # type: ignore
+from bots.shared.user_preferences import preference_store, DEFAULT_PREFERENCES  # type: ignore
+from bots.main_bot.action_handlers import (  # type: ignore
+    execute_document_action,
+    ACTION_LABELS,
+)
 from bots.shared.telegram_utils import (  # type: ignore
     is_text_file,
     is_document_file,
@@ -143,7 +156,120 @@ async def send_progress_updates(
 active_tasks: Dict[str, Dict] = {}  # chat_id -> task_info
 user_sessions: Dict[str, Dict] = {}  # user_id -> session_info
 pending_results: Dict[str, Dict[str, Any]] = {}  # chat_id -> {event, result}
+document_followups: Dict[str, Dict[str, Any]] = {}  # chat_id -> last document result
 
+MODE_LABELS = {
+    "ask": "대화형 모드 (항상 물어보기)",
+    "auto": "자동 실행 모드",
+    "skip": "요약만 받고 건너뛰기",
+}
+
+
+def build_settings_message(prefs: Dict[str, str]) -> str:
+    """Create user-facing summary of current automation preferences."""
+    mode_label = MODE_LABELS.get(prefs.get("mode", ""), "미설정")
+    action_code = prefs.get("default_action", "none")
+    action_label = ACTION_LABELS.get(action_code, "없음")
+
+    lines = [
+        "⚙️ 현재 하이브리드 자동화 설정",
+        f"• 모드: {mode_label}",
+        f"• 기본 후속 작업: {action_label}",
+        "",
+        "원하는 옵션을 선택해 설정을 변경할 수 있습니다.",
+    ]
+    return "\n".join(lines)
+
+
+def build_settings_keyboard(prefs: Dict[str, str]) -> InlineKeyboardMarkup:
+    """Return inline keyboard for settings adjustments."""
+    mode_buttons = [
+        InlineKeyboardButton("대화형 모드", callback_data="pref_mode|ask"),
+        InlineKeyboardButton("자동 실행", callback_data="pref_mode|auto"),
+        InlineKeyboardButton("요약만", callback_data="pref_mode|skip"),
+    ]
+
+    action_buttons = [
+        InlineKeyboardButton("Drive 저장", callback_data="pref_action|drive"),
+        InlineKeyboardButton("Notion 생성", callback_data="pref_action|notion"),
+        InlineKeyboardButton("기본값 없음", callback_data="pref_action|none"),
+    ]
+
+    return InlineKeyboardMarkup([mode_buttons, action_buttons])
+
+
+def build_document_action_keyboard() -> InlineKeyboardMarkup:
+    """Inline keyboard for document follow-up actions."""
+    once_row = [
+        InlineKeyboardButton("Drive 저장", callback_data="doc_action|once|drive"),
+        InlineKeyboardButton("Notion 생성", callback_data="doc_action|once|notion"),
+        InlineKeyboardButton("건너뛰기", callback_data="doc_action|once|none"),
+    ]
+    auto_row = [
+        InlineKeyboardButton("항상 Drive", callback_data="doc_action|auto|drive"),
+        InlineKeyboardButton("항상 Notion", callback_data="doc_action|auto|notion"),
+        InlineKeyboardButton("항상 묻기", callback_data="doc_action|ask|none"),
+    ]
+    extra_row = [
+        InlineKeyboardButton("항상 건너뛰기", callback_data="doc_action|skip|none"),
+        InlineKeyboardButton("설정 열기", callback_data="pref_open|doc"),
+    ]
+
+    return InlineKeyboardMarkup([once_row, auto_row, extra_row])
+
+
+async def prompt_document_followup(bot: Bot, chat_id: str) -> None:
+    """Send follow-up prompt with inline options."""
+    message = (
+        "📤 후속 작업을 선택해주세요!\n"
+        "1️⃣ Drive 저장\n"
+        "2️⃣ Notion 보고서 생성\n"
+        "3️⃣ 아무것도 안 함\n"
+        "\n"
+        "🔁 \"항상\" 버튼을 선택하면 다음부터 자동으로 처리합니다."
+    )
+
+    try:
+        await bot.send_message(
+            chat_id=int(chat_id),
+            text=message,
+            reply_markup=build_document_action_keyboard(),
+        )
+    except Exception as exc:
+        logger.error("Failed to send document follow-up prompt: %s", exc)
+
+
+async def apply_preferences_to_pending_document(bot: Bot, chat_id: str, prefs: Dict[str, str]) -> None:
+    """Apply current preferences to any pending document result."""
+    result_payload = document_followups.get(chat_id)
+    if not result_payload:
+        return
+
+    mode = prefs.get("mode", DEFAULT_PREFERENCES["mode"])
+    action = prefs.get("default_action", DEFAULT_PREFERENCES["default_action"])
+
+    if mode == "auto" and action != "none":
+        action_label = ACTION_LABELS.get(action, action)
+        try:
+            await bot.send_message(
+                chat_id=int(chat_id),
+                text=f"🔁 자동 실행 설정에 따라 \"{action_label}\" 작업을 진행합니다.",
+            )
+        except Exception as exc:
+            logger.error("Failed to announce auto action (settings): %s", exc)
+        await execute_document_action(action, bot, chat_id, result_payload)
+        document_followups.pop(chat_id, None)
+    elif mode == "skip":
+        try:
+            await bot.send_message(
+                chat_id=int(chat_id),
+                text="요약만 전달하고 후속 작업은 건너뛰겠습니다.",
+            )
+        except Exception as exc:
+            logger.error("Failed to send skip confirmation: %s", exc)
+        document_followups.pop(chat_id, None)
+    else:
+        await prompt_document_followup(bot, chat_id)
 # Initialize messenger
 messenger = BotMessenger("main_bot")
 gemini = GeminiAnalyzer(GEMINI_API_KEY)
@@ -250,6 +376,17 @@ async def handle_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
 
     await update.message.reply_text(status_text)
+
+
+async def handle_settings(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle /settings command for automation preferences."""
+    chat_id = str(update.effective_chat.id)
+    prefs = preference_store.get_preferences(chat_id)
+
+    await update.message.reply_text(
+        build_settings_message(prefs),
+        reply_markup=build_settings_keyboard(prefs),
+    )
 
 
 async def handle_bots(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -611,6 +748,106 @@ async def _process_result_payload(bot: Bot, payload: Dict[str, Any]):
         logger.info("Completed task for chat %s", chat_id)
 
 
+async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle inline button presses for automation preferences."""
+    query = update.callback_query
+    if not query:
+        return
+
+    data = query.data or ""
+    chat_id = str(query.message.chat.id if query.message else query.from_user.id)
+
+    try:
+        await query.answer()
+    except Exception as exc:
+        logger.warning("Failed to answer callback query: %s", exc)
+
+    if data.startswith("doc_action|"):
+        parts = data.split("|")
+        if len(parts) != 3:
+            return
+        _, mode, action = parts
+
+        result_payload = document_followups.get(chat_id)
+        if not result_payload:
+            await query.edit_message_text("⚠️ 처리할 문서 결과를 찾지 못했어요. 다시 시도해주세요.")
+            return
+
+        if mode == "once":
+            if action != "none":
+                await execute_document_action(action, context.bot, chat_id, result_payload)
+            else:
+                try:
+                    await context.bot.send_message(
+                        chat_id=int(chat_id),
+                        text="추가 작업 없이 마무리했어요.",
+                    )
+                except Exception as exc:
+                    logger.error("Failed to send no-action confirmation: %s", exc)
+            document_followups.pop(chat_id, None)
+            await query.edit_message_text("✅ 선택한 작업을 완료했습니다.")
+            return
+
+        if mode == "auto":
+            preference_store.set_preferences(chat_id, {"mode": "auto", "default_action": action})
+            action_label = ACTION_LABELS.get(action, action)
+            await query.edit_message_text(
+                f"🔁 앞으로 \"{action_label}\" 작업을 자동으로 실행할게요.",
+            )
+            if action != "none":
+                await execute_document_action(action, context.bot, chat_id, result_payload)
+            document_followups.pop(chat_id, None)
+            return
+
+        if mode == "ask":
+            preference_store.set_preferences(chat_id, {"mode": "ask", "default_action": "none"})
+            await query.edit_message_text("대화형 모드로 전환했어요. 원하는 작업을 다시 선택해주세요.")
+            await prompt_document_followup(context.bot, chat_id)
+            return
+
+        if mode == "skip":
+            preference_store.set_preferences(chat_id, {"mode": "skip", "default_action": "none"})
+            document_followups.pop(chat_id, None)
+            await query.edit_message_text("앞으로 요약만 전달하고 후속 작업은 건너뛰겠습니다.")
+            return
+
+    elif data.startswith("pref_mode|"):
+        _, mode = data.split("|", 1)
+        if mode == "auto":
+            prefs = preference_store.set_preferences(chat_id, {"mode": "auto"})
+        elif mode == "skip":
+            prefs = preference_store.set_preferences(chat_id, {"mode": "skip", "default_action": "none"})
+        else:
+            prefs = preference_store.set_preferences(chat_id, {"mode": "ask", "default_action": "none"})
+
+        prefs = preference_store.get_preferences(chat_id)
+        await query.edit_message_text(
+            build_settings_message(prefs),
+            reply_markup=build_settings_keyboard(prefs),
+        )
+        await apply_preferences_to_pending_document(context.bot, chat_id, prefs)
+
+    elif data.startswith("pref_action|"):
+        _, action = data.split("|", 1)
+        if action == "none":
+            prefs = preference_store.set_preferences(chat_id, {"default_action": "none", "mode": "ask"})
+        else:
+            prefs = preference_store.set_preferences(chat_id, {"default_action": action, "mode": "auto"})
+        prefs = preference_store.get_preferences(chat_id)
+        await query.edit_message_text(
+            build_settings_message(prefs),
+            reply_markup=build_settings_keyboard(prefs),
+        )
+        await apply_preferences_to_pending_document(context.bot, chat_id, prefs)
+
+    elif data.startswith("pref_open|"):
+        prefs = preference_store.get_preferences(chat_id)
+        await query.edit_message_text(
+            build_settings_message(prefs),
+            reply_markup=build_settings_keyboard(prefs),
+        )
+
+
 async def poll_result_messages(context: CallbackContext) -> None:
     """Periodically consume result messages from Redis and dispatch to users."""
     if not pending_results:
@@ -623,7 +860,7 @@ async def poll_result_messages(context: CallbackContext) -> None:
         message = await asyncio.to_thread(
             messenger.pubsub.get_message,
             ignore_subscribe_messages=True,
-            timeout=0.2,
+            timeout=2.0,
         )
 
         while message:
@@ -648,7 +885,7 @@ async def poll_result_messages(context: CallbackContext) -> None:
             message = await asyncio.to_thread(
                 messenger.pubsub.get_message,
                 ignore_subscribe_messages=True,
-                timeout=0.0,
+                timeout=2.0,
             )
 
     except Exception as exc:  # pragma: no cover - defensive logging
@@ -671,14 +908,27 @@ async def wait_for_result(chat_id: str, timeout: int = 1800) -> Optional[Dict[st
 
 
 async def send_document_result(bot: Bot, chat_id: str, result: Dict):
-    """Send document analysis result to user"""
+    """Send document analysis result and trigger follow-up flow."""
+    summary = result.get("summary", "N/A")
+    extracted = result.get("text", "N/A")
+    file_name = result.get("file_name", "문서")
+
     try:
         await bot.send_message(
             chat_id=int(chat_id),
-            text=f"문서 분석 완료!\n\n{result.get('text', 'N/A')}\n\n요약:\n{result.get('summary', 'N/A')}"
+            text=(
+                f"📄 문서 분석 완료!\n"
+                f"파일명: {file_name}\n\n"
+                f"요약:\n{summary}\n\n"
+                f"원문 발췌:\n{extracted}"
+            ),
         )
-    except Exception as e:
-        logger.error(f"Error sending document result: {e}")
+    except Exception as exc:
+        logger.error("Error sending document result: %s", exc)
+
+    document_followups[chat_id] = result
+    prefs = preference_store.get_preferences(chat_id)
+    await apply_preferences_to_pending_document(bot, chat_id, prefs)
 
 
 async def send_audio_result(bot: Bot, chat_id: str, result: Dict):
@@ -720,11 +970,13 @@ def main():
     application.add_handler(CommandHandler("help", handle_help))
     application.add_handler(CommandHandler("status", handle_status))
     application.add_handler(CommandHandler("bots", handle_bots))
+    application.add_handler(CommandHandler("settings", handle_settings))
 
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
     application.add_handler(MessageHandler(filters.Document.ALL, handle_document))
     application.add_handler(MessageHandler(filters.VOICE, handle_voice))
     application.add_handler(MessageHandler(filters.PHOTO, handle_photo))
+    application.add_handler(CallbackQueryHandler(handle_callback_query))
 
     # Start bot
     print("[OK] Bot is running...")
