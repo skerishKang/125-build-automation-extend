@@ -296,12 +296,30 @@ def detect_natural_command(text: str) -> Optional[Dict[str, Any]]:
         args: List[str] = []
         count = None
 
-        count_match = re.search(r'(\d{1,2})\s*(개|건|통|mail|mails|message|messages)?', lowered)
-        if count_match:
-            try:
-                count = max(1, min(int(count_match.group(1)), 10))
-            except ValueError:
-                count = None
+        # Korean number mapping
+        korean_numbers = {
+            "하나": 1, "일": 1, "두개": 2, "둘": 2, "이": 2,
+            "세개": 3, "셋": 3, "삼": 3, "네개": 4, "넷": 4, "사": 4,
+            "다섯개": 5, "다섯": 5, "오": 5, "여섯개": 6, "여섯": 6, "육": 6,
+            "일곱개": 7, "일곱": 7, "칠": 7, "여덟개": 8, "여덟": 8, "팔": 8,
+            "아홉개": 9, "아홉": 9, "구": 9, "열개": 10, "열": 10, "십": 10
+        }
+
+        # Check for Korean numbers
+        for korean_num in korean_numbers:
+            if korean_num in lowered:
+                count = korean_numbers[korean_num]
+                break
+
+        # Check for Arabic numbers
+        if not count:
+            count_match = re.search(r'(\d{1,2})\s*(개|건|통|mail|mails|message|messages)?', lowered)
+            if count_match:
+                try:
+                    count = max(1, min(int(count_match.group(1)), 10))
+                except ValueError:
+                    count = None
+
         if count:
             args.append(str(count))
 
@@ -848,6 +866,21 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
     lowered = text.lower()
+
+    # Detect natural language commands
+    detected = detect_natural_command(text)
+    if detected:
+        if detected["command"] == "gmail":
+            await handle_gmail(update, context, args_override=detected["args"])
+            return
+        if detected["command"] == "calendar":
+            await handle_calendar(update, context, args_override=detected["args"])
+            return
+        if detected["command"] == "calendar_add":
+            await handle_calendar_add(update, context, detected["event_info"])
+            return
+
+    # Show usage help if keywords detected
     if any(keyword in lowered for keyword in GMAIL_KEYWORDS):
         await update.message.reply_text(
             "메일을 확인하려면 `/gmail [개수] [mark]` 명령을 사용해주세요.",
