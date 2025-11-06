@@ -252,6 +252,14 @@ def parse_relative_date_time(text: str, reference: Optional[datetime] = None) ->
         minute=time_minute,
         tzinfo=zoneinfo.ZoneInfo('Asia/Seoul'),
     )
+
+    # Heuristic for AM/PM if not explicitly specified
+    # If no meridiem (AM/PM) is specified and the parsed hour is less than 12,
+    # and the current hour is already past the parsed hour, assume PM.
+    if meridiem_offset == 0 and time_hour < 12:
+        if reference.hour >= time_hour:
+            start_dt = start_dt + timedelta(hours=12)
+
     end_dt = start_dt + timedelta(minutes=duration_minutes)
 
     return {
@@ -1274,9 +1282,10 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = str(update.effective_chat.id)
     duration = voice.duration or 0
 
-    logger.info(f"Voice message: {duration}s")
+    logger.info(f"Voice message: {duration}s, MIME type: {voice.mime_type}")
 
     if not voice.mime_type or not voice.mime_type.startswith('audio/'):
+        logger.warning(f"Voice message has unsupported MIME type: {voice.mime_type}. Returning early.")
         await update.message.reply_text("⚠️ WARN: 음성 파일 형식이 올바르지 않습니다.")
         return
 

@@ -164,7 +164,8 @@ class GmailService:
             message = self.service.users().messages().get(
                 userId='me',
                 id=message_id,
-                format='full'
+                format='full',
+                fields='id,payload/headers,body'
             ).execute()
 
             # Extract headers
@@ -172,6 +173,9 @@ class GmailService:
             subject = next((h['value'] for h in headers if h['name'] == 'Subject'), 'No Subject')
             sender = next((h['value'] for h in headers if h['name'] == 'From'), 'Unknown Sender')
             date = next((h['value'] for h in headers if h['name'] == 'Date'), '')
+
+            # Generate Gmail web link
+            gmail_link = f"https://mail.google.com/mail/u/0/#inbox/{message_id}"
 
             # Extract body
             body = self._extract_email_body(message['payload'])
@@ -181,7 +185,8 @@ class GmailService:
                 'subject': subject,
                 'sender': sender,
                 'date': date,
-                'body': body[:5000]  # Limit to 5000 chars for full email preview
+                'body': body[:5000],  # Limit to 5000 chars for full email preview
+                'link': gmail_link  # Gmail web link to view full email
             }
 
         except Exception as e:
