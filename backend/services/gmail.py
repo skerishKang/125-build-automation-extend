@@ -116,7 +116,8 @@ class GmailService:
 
             flow = InstalledAppFlow.from_client_secrets_file(
                 GMAIL_OAUTH_CLIENT_FILE, SCOPES)
-            creds = flow.run_local_server(port=0)
+            # Use specific port to avoid redirect_uri_mismatch
+            creds = flow.run_local_server(port=8080)
 
             # Save credentials for next run
             try:
