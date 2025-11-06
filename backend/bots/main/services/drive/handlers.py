@@ -291,19 +291,14 @@ async def handle_document_auto_save(runtime: Any, update: "Update", context: "Co
 
     # Check if it's an audio file - redirect to voice processing
     file_name = doc.file_name or ""
-    audio_extensions = ['.mp3', '.wav', '.ogg', '.m4a', '.aac', '.flac', '.wma', '.opus']
-    if any(file_name.lower().endswith(ext) for ext in audio_extensions):
-        logger.info(f"Detected audio file: {file_name}, redirecting to voice processing")
-        # Send acknowledgment message
-        await update.message.reply_text(f"🎤 오디오 파일을 받았습니다!\n파일: {file_name}\n길이 분석 중...")
-        # Import and call the voice handler
-        try:
-            from backend.bots.main.services.media import handlers as media_handlers
-            await media_handlers.handle_voice(runtime, update, context)
-        except Exception as e:
-            logger.error(f"Failed to handle audio file: {e}")
-            await reply_text(update, f"오디오 처리 중 오류가 발생했습니다: {e}")
-        return
+    # Get file extension (case-insensitive)
+    file_ext = os.path.splitext(file_name)[1].lower() if file_name else ""
+    audio_extensions = ['.mp3', '.wav', '.ogg', '.m4a', '.aac', '.flac', '.wma', '.opus', '.m4b', '.mp4']
+    if file_ext in audio_extensions:
+        logger.info(f"Detected audio file: {file_name}, extension: {file_ext}")
+        # Send immediate acknowledgment message
+        await update.message.reply_text(f"🎤 오디오 파일을 받았습니다!\n파일: {file_name}")
+        return  # Simply acknowledge and return - no further processing
 
     progress_messages = []
     progress_messages.append(await update.message.reply_text(f"📁 {doc.file_name} Google Drive 자동 저장 중... [0%]"))

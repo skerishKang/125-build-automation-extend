@@ -14,6 +14,11 @@ from typing import Dict, List, Any
 import tempfile
 import asyncio
 
+# Add current directory to Python path
+current_dir = os.getcwd()
+if current_dir not in sys.path:
+    sys.path.insert(0, current_dir)
+
 from dotenv import load_dotenv
 
 # Ensure .env is loaded from the backend directory regardless of package depth.
@@ -26,7 +31,6 @@ SUPABASE_KEY = os.getenv("SUPABASE_ANON_KEY")
 
 # logging
 from backend.core import build_application
-from backend.bots import register_main_bot_handlers
 from backend.utils.logger import configure_logging, LOG_DIR
 from backend.bots.main.services.drive import handlers as drive_handlers
 from backend.bots.main.services.calendar import handlers as calendar_handlers
@@ -649,6 +653,7 @@ def main():
     _app_instance = app
 
     # Allow new modular registrations to extend the application.
+    from backend.bots import register_main_bot_handlers
     register_main_bot_handlers(app)
 
     logger.info("Handlers registered. Starting polling...")
