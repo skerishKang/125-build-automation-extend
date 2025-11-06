@@ -201,21 +201,16 @@ def extract_text_from_pptx(file_path: str) -> str:
 async def process_document_task(task_data: Dict):
     """Process document analysis task"""
     data = task_data.get('data', task_data)
+
     try:
         chat_id = data.get('chat_id')
         file_data = data.get('file_data', {})
-        file_id = file_data.get('file_id')
+
+        file_path = file_data.get('file_path')
         file_name = file_data.get('file_name', 'document')
 
-        logger.info(f"Processing document: {file_name} for chat {chat_id}")
+        logger.info(f"Processing document from path: {file_path}")
 
-        # Send progress update
-        messenger.notify_progress(chat_id, "문서를 다운로드하는 중...")
-
-        # Download file
-        file_path = await download_file_from_telegram(file_id, file_name)
-
-        # Extract text based on file type
         messenger.notify_progress(chat_id, "텍스트를 추출하는 중...")
 
         file_ext = os.path.splitext(file_name)[1].lower()
@@ -234,21 +229,16 @@ async def process_document_task(task_data: Dict):
         elif file_ext == '.pptx':
             extracted_text = extract_text_from_pptx(file_path)
         else:
-            # Try as plain text
             extracted_text = extract_text_from_txt(file_path)
 
-        # Limit text length for AI processing
         max_length = 10000
         if len(extracted_text) > max_length:
             extracted_text = extracted_text[:max_length] + "\n\n[텍스트가 길어서 일부만 분석했습니다]"
 
-        # Send progress update
         messenger.notify_progress(chat_id, "Gemini AI로 분석하는 중...")
 
-        # Analyze with Gemini AI
         summary = gemini.analyze_document(extracted_text)
 
-        # Prepare result
         result = {
             "text": extracted_text,
             "summary": summary,
@@ -256,26 +246,30 @@ async def process_document_task(task_data: Dict):
             "processed_at": datetime.now().isoformat()
         }
 
-        # Send result to main bot
         messenger.send_result(chat_id, result)
 
-        # Clean up
         try:
             os.remove(file_path)
-            os.rmdir(os.path.dirname(file_path))
-        except:
+        except Exception:
             pass
 
         logger.info(f"Completed document analysis for chat {chat_id}")
 
     except Exception as e:
         logger.error(f"Error processing document task: {e}")
-        # Send error result
+
         error_result = {
             "error": str(e),
             "file_name": file_data.get('file_name', 'unknown')
         }
         messenger.send_result(data.get('chat_id'), error_result)
+
+        try:
+            file_path = file_data.get('file_path')
+            if file_path:
+                os.remove(file_path)
+        except Exception:
+            pass
 
 
 async def listen_for_tasks():

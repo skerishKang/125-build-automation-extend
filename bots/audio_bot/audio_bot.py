@@ -104,75 +104,59 @@ async def transcribe_audio(file_path: str) -> str:
 async def process_audio_task(task_data: Dict):
     """Process audio transcription task"""
     data = task_data.get('data', task_data)
+
     try:
         chat_id = data.get('chat_id')
         voice_data = data.get('voice_data', {})
-        file_id = voice_data.get('file_id')
+
+        file_path = voice_data.get('file_path')
         duration = voice_data.get('duration', 0)
         mime_type = voice_data.get('mime_type', 'audio/ogg')
 
-        # Determine file extension from mime type
-        ext_map = {
-            'audio/ogg': '.ogg',
-            'audio/mpeg': '.mp3',
-            'audio/wav': '.wav',
-            'audio/x-wav': '.wav'
-        }
-        file_ext = ext_map.get(mime_type, '.ogg')
-        file_name = f"voice_{int(time.time())}{file_ext}"
+        logger.info(f"Processing audio from path: {file_path} ({duration}s) for chat {chat_id}")
 
-        logger.info(f"Processing audio: {file_name} ({duration}s) for chat {chat_id}")
+        messenger.notify_progress(chat_id, "오디오를 인식하는 중...")
 
-        # Send progress update
-        messenger.notify_progress(chat_id, "오디오를 다운로드하는 중...")
-
-        # Download audio file
-        file_path = await download_audio_from_telegram(file_id, file_name)
-
-        # Send progress update
-        messenger.notify_progress(chat_id, "Whisper로 음성을 인식하는 중...")
-
-        # Transcribe audio
         transcription = await transcribe_audio(file_path)
 
         if not transcription.strip():
             transcription = "[음성 인식 결과 없음]"
 
-        # Send progress update
         messenger.notify_progress(chat_id, "Gemini AI로 분석하는 중...")
 
-        # Analyze with Gemini AI
-        summary = gemini.analyze_audio(transcription)
+        summary = gemini.analyze_audio_transcription(transcription)
 
-        # Prepare result
         result = {
             "transcription": transcription,
             "summary": summary,
             "duration": duration,
-            "file_name": file_name,
             "processed_at": datetime.now().isoformat()
         }
 
-        # Send result to main bot
         messenger.send_result(chat_id, result)
 
-        # Clean up
         try:
             os.remove(file_path)
-            os.rmdir(os.path.dirname(file_path))
-        except:
+        except Exception:
             pass
 
         logger.info(f"Completed audio transcription for chat {chat_id}")
 
     except Exception as e:
         logger.error(f"Error processing audio task: {e}")
-        # Send error result
+
         error_result = {
             "error": str(e),
-            "duration": data.get('voice_data', {}).get('duration', 0)
+            "duration": voice_data.get('duration', 0)
         }
         messenger.send_result(data.get('chat_id'), error_result)
+
+        try:
+            file_path = voice_data.get('file_path')
+            if file_path:
+                os.remove(file_path)
+        except Exception:
+            pass
 
 
 async def listen_for_tasks():

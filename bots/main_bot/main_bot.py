@@ -331,7 +331,6 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     logger.info(f"Document upload: {file_name} ({file_size} bytes)")
 
-    # Check if it's a document
     if not is_document_file(file_name) and not is_text_file(file_name):
         await update.message.reply_text(
             f"[WARN] 지원하지 않는 파일 형식입니다: {file_name}\n"
@@ -339,7 +338,6 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # Check file size (50MB limit)
     max_size = 50 * 1024 * 1024
     if file_size > max_size:
         await update.message.reply_text(
@@ -348,15 +346,6 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # Acknowledge receipt
-    await update.message.reply_text(
-        f"문서 접수!\n"
-        f"파일: {file_name}\n"
-        f"크기: {file_size / 1024:.1f}KB\n"
-        f"문서봇이 분석 중입니다..."
-    )
-
-    # Store task info
     active_tasks[chat_id] = {
         "type": "document",
         "status": "processing",
@@ -365,17 +354,28 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "start_time": datetime.now().strftime("%H:%M:%S")
     }
 
-    # Send to document bot
+    try:
+        file = await context.bot.get_file(doc.file_id)
+        import tempfile
+        temp_dir = tempfile.gettempdir()
+        file_path = os.path.join(temp_dir, f"doc_{chat_id}_{file_name}")
+        await file.download_to_drive(file_path)
+        logger.info(f"Downloaded document to: {file_path}")
+    except Exception as exc:
+        logger.error(f"Error downloading file: {exc}")
+        await update.message.reply_text("[ERROR] 파일 다운로드 중 오류가 발생했습니다.")
+        active_tasks.pop(chat_id, None)
+        return
+
     messenger.publish_task("document", {
         "chat_id": chat_id,
         "file_data": {
-            "file_id": doc.file_id,
+            "file_path": file_path,
             "file_name": file_name,
             "file_size": file_size
         },
         "user_id": str(update.effective_user.id)
     })
-
     logger.info(f"Sent document task to document bot for chat {chat_id}")
 
     estimated_time = estimate_processing_time("document", {
@@ -397,12 +397,11 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
     result_payload = await wait_for_result(chat_id, timeout=1800)
     cancel_event.set()
 
-    progress_message_id = await progress_task
-    if progress_message_id:
-        try:
-            await context.bot.delete_message(chat_id=int(chat_id), message_id=progress_message_id)
-        except Exception as exc:
-            logger.warning("Failed to delete progress message: %s", exc)
+    try:
+        progress_message_id = await progress_task
+        await context.bot.delete_message(chat_id=int(chat_id), message_id=progress_message_id)
+    except Exception as exc:
+        logger.warning("Failed to delete progress message: %s", exc)
 
     if result_payload:
         await _process_result_payload(context.bot, result_payload)
@@ -411,6 +410,10 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
             chat_id=int(chat_id),
             text="⏰ 문서 처리가 예상보다 오래 걸려 중단되었어요. 다시 시도해주세요.",
         )
+        try:
+            os.remove(file_path)
+        except Exception:
+            pass
 
     active_tasks.pop(chat_id, None)
 
@@ -433,23 +436,6 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # Check duration (max 5 minutes)
-    max_duration = 5 * 60
-    if duration > max_duration:
-        await update.message.reply_text(
-            f"[WARN] 음성이 너무 깁니다 (최대 5분)\n"
-            f"현재 길이: {duration // 60}분 {duration % 60}초"
-        )
-        return
-
-    # Acknowledge
-    await update.message.reply_text(
-        f"음성 접수!\n"
-        f"길이: {duration // 60}분 {duration % 60}초\n"
-        f"오디오봇이 처리 중입니다..."
-    )
-
-    # Store task info
     active_tasks[chat_id] = {
         "type": "audio",
         "status": "processing",
@@ -458,17 +444,43 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "start_time": datetime.now().strftime("%H:%M:%S")
     }
 
-    # Send to audio bot
+    try:
+        file = await context.bot.get_file(voice.file_id)
+
+        ext_map = {
+            'audio/ogg': '.ogg',
+            'audio/mpeg': '.mp3',
+            'audio/wav': '.wav',
+            'audio/x-wav': '.wav'
+        }
+        file_ext = ext_map.get(voice.mime_type, '.ogg')
+
+        import tempfile
+        import time
+        temp_dir = tempfile.gettempdir()
+        tmp_name = f"voice_{chat_id}_{int(time.time())}{file_ext}"
+        file_path = os.path.join(temp_dir, tmp_name)
+        await file.download_to_drive(file_path)
+
+        logger.info(f"Downloaded voice to: {file_path}")
+
+    except Exception as exc:
+        logger.error(f"Error downloading voice: {exc}")
+        await update.message.reply_text(
+            "[ERROR] 음성 다운로드 중 오류가 발생했습니다."
+        )
+        active_tasks.pop(chat_id, None)
+        return
+
     messenger.publish_task("audio", {
         "chat_id": chat_id,
         "voice_data": {
-            "file_id": voice.file_id,
+            "file_path": file_path,
             "duration": duration,
             "mime_type": voice.mime_type
         },
         "user_id": str(update.effective_user.id)
     })
-
     logger.info(f"Sent voice task to audio bot for chat {chat_id}")
 
     estimated_time = estimate_processing_time("audio", {"duration": duration})
@@ -486,12 +498,11 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
     result_payload = await wait_for_result(chat_id, timeout=1800)
     cancel_event.set()
 
-    progress_message_id = await progress_task
-    if progress_message_id:
-        try:
-            await context.bot.delete_message(chat_id=int(chat_id), message_id=progress_message_id)
-        except Exception as exc:
-            logger.warning("Failed to delete progress message: %s", exc)
+    try:
+        progress_message_id = await progress_task
+        await context.bot.delete_message(chat_id=int(chat_id), message_id=progress_message_id)
+    except Exception as exc:
+        logger.warning("Failed to delete progress message: %s", exc)
 
     if result_payload:
         await _process_result_payload(context.bot, result_payload)
@@ -500,6 +511,10 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
             chat_id=int(chat_id),
             text="⏰ 음성 처리가 예상보다 오래 걸려 중단되었어요. 다시 시도해주세요.",
         )
+        try:
+            os.remove(file_path)
+        except Exception:
+            pass
 
     active_tasks.pop(chat_id, None)
 
@@ -514,6 +529,76 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     file_id = photo.file_id
 
     logger.info(f"Photo upload: {file_id}")
+    active_tasks[chat_id] = {
+        "type": "image",
+        "status": "processing",
+        "file_id": file_id,
+        "start_time": datetime.now().strftime("%H:%M:%S")
+    }
+
+    try:
+        file = await context.bot.get_file(file_id)
+
+        import tempfile
+        import time
+        temp_dir = tempfile.gettempdir()
+        file_name = f"image_{chat_id}_{int(time.time())}.jpg"
+        file_path = os.path.join(temp_dir, file_name)
+        await file.download_to_drive(file_path)
+
+        logger.info(f"Downloaded image to: {file_path}")
+
+    except Exception as exc:
+        logger.error(f"Error downloading image: {exc}")
+        await update.message.reply_text(
+            "[ERROR] 이미지 다운로드 중 오류가 발생했습니다."
+        )
+        active_tasks.pop(chat_id, None)
+        return
+
+    messenger.publish_task("image", {
+        "chat_id": chat_id,
+        "image_data": {
+            "file_path": file_path,
+        },
+        "user_id": str(update.effective_user.id)
+    })
+    logger.info(f"Sent image task to image bot for chat {chat_id}")
+
+    estimated_time = estimate_processing_time("image", {})
+    cancel_event = asyncio.Event()
+    progress_task = asyncio.create_task(
+        send_progress_updates(
+            context.bot,
+            int(chat_id),
+            "image",
+            estimated_time,
+            cancel_event,
+        )
+    )
+
+    result_payload = await wait_for_result(chat_id, timeout=1800)
+    cancel_event.set()
+
+    try:
+        progress_message_id = await progress_task
+        await context.bot.delete_message(chat_id=int(chat_id), message_id=progress_message_id)
+    except Exception as exc:
+        logger.warning("Failed to delete progress message: %s", exc)
+
+    if result_payload:
+        await _process_result_payload(context.bot, result_payload)
+    else:
+        await context.bot.send_message(
+            chat_id=int(chat_id),
+            text="⏰ 이미지 처리가 예상보다 오래 걸려 중단되었어요. 다시 시도해주세요.",
+        )
+        try:
+            os.remove(file_path)
+        except Exception:
+            pass
+
+    active_tasks.pop(chat_id, None)
 
     # Acknowledge
     await update.message.reply_text(

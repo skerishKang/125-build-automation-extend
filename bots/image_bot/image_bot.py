@@ -81,57 +81,50 @@ def encode_image_to_base64(image_path: str) -> str:
 
 async def process_image_task(task_data: Dict):
     """Process image analysis task"""
-    data = task_data.get("data", task_data)
+    data = task_data.get('data', task_data)
+
     try:
         chat_id = data.get('chat_id')
         image_data = data.get('image_data', {})
-        file_id = image_data.get('file_id')
 
-        # Generate file name
-        file_name = f"image_{int(time.time())}.jpg"
+        file_path = image_data.get('file_path')
 
-        logger.info(f"Processing image: {file_id} for chat {chat_id}")
+        logger.info(f"Processing image from path: {file_path} for chat {chat_id}")
 
-        # Send progress update
-        messenger.notify_progress(chat_id, "이미지를 다운로드하는 중...")
-
-        # Download image file
-        file_path = await download_image_from_telegram(file_id, file_name)
-
-        # Send progress update
         messenger.notify_progress(chat_id, "이미지를 분석하는 중...")
 
-        # Analyze image with Gemini AI
         description = gemini.analyze_image_description(file_path)
-        analysis = gemini.analyze_image(file_path)
+        analysis = gemini.analyze_image_description(file_path)
 
-        # Prepare result
         result = {
             "description": description,
             "analysis": analysis,
-            "file_name": file_name,
             "processed_at": datetime.now().isoformat()
         }
 
-        # Send result to main bot
         messenger.send_result(chat_id, result)
 
-        # Clean up
         try:
             os.remove(file_path)
-            os.rmdir(os.path.dirname(file_path))
-        except:
+        except Exception:
             pass
 
         logger.info(f"Completed image analysis for chat {chat_id}")
 
     except Exception as e:
         logger.error(f"Error processing image task: {e}")
-        # Send error result
+
         error_result = {
             "error": str(e)
         }
         messenger.send_result(data.get('chat_id'), error_result)
+
+        try:
+            file_path = image_data.get('file_path')
+            if file_path:
+                os.remove(file_path)
+        except Exception:
+            pass
 
 
 async def listen_for_tasks():
