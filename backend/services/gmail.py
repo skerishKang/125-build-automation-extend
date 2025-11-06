@@ -27,8 +27,9 @@ logger = logging.getLogger("gmail_service")
 # Load .env file from bots directory
 def load_env():
     """Manually load .env file from bots directory"""
-    # Navigate from backend/services/ to bots/.env
-    env_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), '..', 'bots', '.env')
+    # Navigate from backend/services/ to project_root/bots/.env
+    backend_dir = os.path.dirname(os.path.dirname(__file__))
+    env_path = os.path.join(backend_dir, '..', 'bots', '.env')
     if os.path.exists(env_path):
         with open(env_path, 'r', encoding='utf-8') as f:
             for line in f:
@@ -45,7 +46,8 @@ load_env()
 SCOPES = ['https://www.googleapis.com/auth/gmail.modify']
 
 # Token pickle file for OAuth2
-TOKEN_FILE = os.path.join(tempfile.gettempdir(), 'gmail_token.pickle')
+# Use project directory instead of temp to ensure WSL and Windows access
+TOKEN_FILE = os.path.join(os.path.dirname(os.path.dirname(__file__)), '..', 'bots', 'tmp', 'gmail_token.pickle')
 DEFAULT_CREDENTIALS_FILE = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'gmail_credentials.json')
 DEFAULT_SERVICE_ACCOUNT_FILE = os.path.abspath(os.path.join(os.path.dirname(os.path.dirname(__file__)), '..', 'service_account.json'))
 
@@ -116,8 +118,8 @@ class GmailService:
 
             flow = InstalledAppFlow.from_client_secrets_file(
                 GMAIL_OAUTH_CLIENT_FILE, SCOPES)
-            # Use specific port to avoid redirect_uri_mismatch
-            creds = flow.run_local_server(port=8080)
+            # Use port 8888 instead of 8080 (8080 might be in use)
+            creds = flow.run_local_server(port=8888)
 
             # Save credentials for next run
             try:
