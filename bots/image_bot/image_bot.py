@@ -86,6 +86,7 @@ async def process_image_task(task_data: Dict):
     try:
         chat_id = data.get('chat_id')
         image_data = data.get('image_data', {})
+        task_id = data.get('task_id')
 
         file_path = image_data.get('file_path')
 
@@ -102,7 +103,7 @@ async def process_image_task(task_data: Dict):
             "processed_at": datetime.now().isoformat()
         }
 
-        messenger.send_result(chat_id, result)
+        messenger.send_result(chat_id, result, task_id)
 
         try:
             os.remove(file_path)
@@ -119,7 +120,7 @@ async def process_image_task(task_data: Dict):
             "description": f"이미지 분석 중 오류가 발생했습니다: {str(e)}",
             "analysis": "분석을 완료할 수 없습니다."
         }
-        messenger.send_result(data.get('chat_id'), error_result)
+        messenger.send_result(data.get('chat_id'), error_result, task_id)
 
         try:
             file_path = image_data.get('file_path')

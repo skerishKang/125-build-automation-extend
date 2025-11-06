@@ -56,7 +56,7 @@ class BotMessenger:
         redis_client.publish(channel, json.dumps(message))
         logger.info(f"Published task to {channel}: {task_type}")
 
-    def send_result(self, chat_id: str, result: Dict[str, Any]):
+    def send_result(self, chat_id: str, result: Dict[str, Any], task_id: str | None = None):
         """Send result back to main bot"""
         if not REDIS_ENABLED or not redis_client:
             logger.info(f"[MOCK] Would send result to chat_id {chat_id}: {result}")
@@ -69,6 +69,8 @@ class BotMessenger:
             "result": result,
             "timestamp": time.time()
         }
+        if task_id:
+            message["task_id"] = task_id
         redis_client.publish(channel, json.dumps(message))
         logger.info(f"Sent result to chat_id {chat_id}")
 

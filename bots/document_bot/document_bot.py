@@ -232,6 +232,7 @@ async def process_document_task(task_data: Dict):
     try:
         chat_id = data.get('chat_id')
         file_data = data.get('file_data', {})
+        task_id = data.get('task_id')
 
         file_path = file_data.get('file_path')
         file_name = file_data.get('file_name', 'document')
@@ -278,7 +279,7 @@ async def process_document_task(task_data: Dict):
             "processed_at": datetime.now().isoformat()
         }
 
-        messenger.send_result(chat_id, result)
+        messenger.send_result(chat_id, result, task_id)
 
         try:
             os.remove(file_path)
@@ -294,7 +295,7 @@ async def process_document_task(task_data: Dict):
             "error": str(e),
             "file_name": file_data.get('file_name', 'unknown')
         }
-        messenger.send_result(data.get('chat_id'), error_result)
+        messenger.send_result(data.get('chat_id'), error_result, task_id)
 
         try:
             file_path = file_data.get('file_path')

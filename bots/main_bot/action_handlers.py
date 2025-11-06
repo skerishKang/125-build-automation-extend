@@ -8,7 +8,7 @@ import logging
 import os
 import tempfile
 import textwrap
-from typing import Any, Dict, Tuple, Callable
+from typing import Any, Dict, Tuple, Callable, Awaitable
 
 from telegram import Bot
 
@@ -224,8 +224,8 @@ async def _handle_audio_summary(_: Bot, __: str, record: Dict[str, Any]) -> str:
 
 
 async def _handle_combo(
-    primary: Callable[[Bot, str, Dict[str, Any]], asyncio.Future],
-    secondary: Callable[[Bot, str, Dict[str, Any]], asyncio.Future],
+    primary: Callable[[Bot, str, Dict[str, Any]], Awaitable[str]],
+    secondary: Callable[[Bot, str, Dict[str, Any]], Awaitable[str]],
     bot: Bot,
     chat_id: str,
     record: Dict[str, Any],
@@ -332,4 +332,3 @@ async def execute_followup_action(action: str, bot: Bot, chat_id: str, record: D
         logger.error("Failed to send action confirmation message: %s", exc)
 
     return action, message
-

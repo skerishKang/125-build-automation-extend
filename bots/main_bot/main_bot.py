@@ -1249,49 +1249,62 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
         send_progress_updates(context.bot, int(chat_id), task_id, "document", estimated_time, cancel_event)
     )
 
-    try:
-        result_payload = await wait_for_result(task_id, timeout=1800)
-    finally:
-        cancel_event.set()
-        await progress_task
-
-    if result_payload:
-        await _process_result_payload(context.bot, result_payload)
-    else:
-        await context.bot.send_message(
-            chat_id=int(chat_id),
-            text="⏱️ 처리 시간이 초과되었습니다. 다시 시도해주세요.",
-        )
-
-    if file_path:
+    async def process_document_result():
         try:
-            os.remove(file_path)
-        except Exception:
-            pass
+            result_payload = await wait_for_result(task_id, timeout=1800)
+        finally:
+            cancel_event.set()
+            await progress_task
 
-    chat_tasks = active_tasks.get(chat_id, {})
-    chat_tasks.pop(task_id, None)
-    if not chat_tasks:
-        active_tasks.pop(chat_id, None)
+        if result_payload:
+            await _process_result_payload(context.bot, result_payload)
+        else:
+            await context.bot.send_message(
+                chat_id=int(chat_id),
+                text="⏱️ 처리 시간이 초과되었습니다. 다시 시도해주세요.",
+            )
+
+        if file_path:
+            try:
+                os.remove(file_path)
+            except Exception:
+                pass
+
+        chat_tasks = active_tasks.get(chat_id, {})
+        chat_tasks.pop(task_id, None)
+        if not chat_tasks:
+            active_tasks.pop(chat_id, None)
+
+    asyncio.create_task(process_document_result())
+    return
 async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle voice messages"""
+    logger.info(">>> handle_voice CALLED! <<<")
     voice = update.message.voice
+    logger.info(f"voice object: {voice}")
+
     if not voice:
+        logger.warning("❌ No voice object in message")
         return
 
     chat_id = str(update.effective_chat.id)
-    duration = voice.duration or 0
+    logger.info(f"chat_id: {chat_id}")
 
-    logger.info(f"Voice message: {duration}s, MIME type: {voice.mime_type}")
+    duration = voice.duration or 0
+    logger.info(f"Duration: {duration}s")
+    logger.info(f"MIME type: {voice.mime_type}")
+    logger.info(f"File ID: {voice.file_id}")
 
     if not voice.mime_type or not voice.mime_type.startswith('audio/'):
-        logger.warning(f"Voice message has unsupported MIME type: {voice.mime_type}. Returning early.")
+        logger.warning(f"❌ Voice message has unsupported MIME type: {voice.mime_type}. Returning early.")
         await update.message.reply_text("⚠️ WARN: 음성 파일 형식이 올바르지 않습니다.")
         return
 
+    logger.info("✅ Voice validation passed, sending response...")
     await update.message.reply_text(
         f"🎤 음성을 받았습니다!\n길이: {duration}초"
     )
+    logger.info("✅ Response sent successfully!")
 
     task_id = str(uuid4())
     active_tasks.setdefault(chat_id, {})[task_id] = {
@@ -1354,28 +1367,32 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
         send_progress_updates(context.bot, int(chat_id), task_id, "audio", estimated_time, cancel_event)
     )
 
-    try:
-        result_payload = await wait_for_result(task_id, timeout=1800)
-    finally:
-        cancel_event.set()
-        await progress_task
-
-    if result_payload:
-        await _process_result_payload(context.bot, result_payload)
-    else:
-        await context.bot.send_message(
-            chat_id=int(chat_id),
-            text="⏰ 음성 처리가 예상보다 오래 걸려 중단되었어요. 다시 시도해주세요.",
-        )
+    async def process_audio_result():
         try:
-            os.remove(file_path)
-        except Exception:
-            pass
+            result_payload = await wait_for_result(task_id, timeout=1800)
+        finally:
+            cancel_event.set()
+            await progress_task
 
-    chat_tasks = active_tasks.get(chat_id, {})
-    chat_tasks.pop(task_id, None)
-    if not chat_tasks:
-        active_tasks.pop(chat_id, None)
+        if result_payload:
+            await _process_result_payload(context.bot, result_payload)
+        else:
+            await context.bot.send_message(
+                chat_id=int(chat_id),
+                text="⏰ 음성 처리가 예상보다 오래 걸려 중단되었어요. 다시 시도해주세요.",
+            )
+            try:
+                os.remove(file_path)
+            except Exception:
+                pass
+
+        chat_tasks = active_tasks.get(chat_id, {})
+        chat_tasks.pop(task_id, None)
+        if not chat_tasks:
+            active_tasks.pop(chat_id, None)
+
+    asyncio.create_task(process_audio_result())
+    return
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle photo uploads"""
     photo = update.message.photo[-1]
@@ -1438,29 +1455,33 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         send_progress_updates(context.bot, int(chat_id), task_id, "image", estimated_time, cancel_event)
     )
 
-    try:
-        result_payload = await wait_for_result(task_id, timeout=1800)
-    finally:
-        cancel_event.set()
-        await progress_task
+    async def process_image_result():
+        try:
+            result_payload = await wait_for_result(task_id, timeout=1800)
+        finally:
+            cancel_event.set()
+            await progress_task
 
-    if result_payload:
-        await _process_result_payload(context.bot, result_payload)
-    else:
-        await context.bot.send_message(
-            chat_id=int(chat_id),
-            text="⏰ 이미지 처리가 예상보다 오래 걸려 중단되었어요. 다시 시도해주세요.",
-        )
-        if file_path:
-            try:
-                os.remove(file_path)
-            except Exception:
-                pass
+        if result_payload:
+            await _process_result_payload(context.bot, result_payload)
+        else:
+            await context.bot.send_message(
+                chat_id=int(chat_id),
+                text="⏰ 이미지 처리가 예상보다 오래 걸려 중단되었어요. 다시 시도해주세요.",
+            )
+            if file_path:
+                try:
+                    os.remove(file_path)
+                except Exception:
+                    pass
 
-    chat_tasks = active_tasks.get(chat_id, {})
-    chat_tasks.pop(task_id, None)
-    if not chat_tasks:
-        active_tasks.pop(chat_id, None)
+        chat_tasks = active_tasks.get(chat_id, {})
+        chat_tasks.pop(task_id, None)
+        if not chat_tasks:
+            active_tasks.pop(chat_id, None)
+
+    asyncio.create_task(process_image_result())
+    return
 async def _process_result_payload(bot: Bot, payload: Dict[str, Any]):
     """Process a single result payload coming from Redis."""
     chat_id = str(payload.get("chat_id") or "")

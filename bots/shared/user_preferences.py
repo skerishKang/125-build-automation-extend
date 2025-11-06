@@ -5,16 +5,20 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import Dict
+from typing import Any, Dict
 
 from .redis_utils import REDIS_ENABLED, redis_client
 
 logger = logging.getLogger("user_preferences")
 
 PREFERENCE_KEY_PREFIX = "user_prefs:"
-DEFAULT_PREFERENCES: Dict[str, str] = {
-    "mode": "ask",           # ask | auto | skip
-    "default_action": "none"  # none | drive | notion
+DEFAULT_PREFERENCES = {
+    "mode": "ask",  # ask | auto | skip
+    "default_actions": {
+        "document": "none",
+        "image": "none",
+        "audio": "none",
+    },
 }
 
 
@@ -29,7 +33,7 @@ class PreferenceStore:
     def _make_key(self, chat_id: str) -> str:
         return f"{self.prefix}{chat_id}"
 
-    def get_preferences(self, chat_id: str) -> Dict[str, str]:
+    def get_preferences(self, chat_id: str) -> Dict[str, Any]:
         """Return stored preferences merged with defaults."""
         key = self._make_key(chat_id)
 
@@ -46,13 +50,47 @@ class PreferenceStore:
         else:
             stored = self._memory_store.get(chat_id, {})
 
-        merged = {**DEFAULT_PREFERENCES, **stored}
+        merged: Dict[str, Any] = {**DEFAULT_PREFERENCES, **stored}
+
+        # Backward compatibility: migrate legacy "default_action" field
+        legacy_action = stored.get("default_action") if isinstance(stored, dict) else None
+        default_actions = DEFAULT_PREFERENCES["default_actions"].copy()
+        stored_defaults = stored.get("default_actions") if isinstance(stored, dict) else {}
+        if isinstance(stored_defaults, dict):
+            default_actions.update(stored_defaults)
+        if isinstance(legacy_action, str):
+            default_actions["document"] = legacy_action
+        merged["default_actions"] = default_actions
+
         return merged
 
-    def set_preferences(self, chat_id: str, prefs: Dict[str, str]) -> Dict[str, str]:
+    def set_preferences(self, chat_id: str, prefs: Dict[str, Any]) -> Dict[str, Any]:
         """Persist provided preferences outside of defaults."""
-        merged = {**DEFAULT_PREFERENCES, **prefs}
-        payload = {k: v for k, v in merged.items() if DEFAULT_PREFERENCES.get(k) != v}
+        current = self.get_preferences(chat_id)
+        merged: Dict[str, Any] = {**current}
+
+        for key, value in prefs.items():
+            if key == "default_actions":
+                defaults = merged.get("default_actions", {}).copy()
+                if isinstance(value, dict):
+                    defaults.update(value)
+                merged["default_actions"] = defaults
+            else:
+                merged[key] = value
+
+        payload: Dict[str, Any] = {}
+        for key, value in merged.items():
+            default_value = DEFAULT_PREFERENCES.get(key)
+            if key == "default_actions":
+                diff = {
+                    t: v
+                    for t, v in value.items()
+                    if default_value.get(t) != v  # type: ignore[arg-type]
+                }
+                if diff:
+                    payload[key] = diff
+            elif value != default_value:
+                payload[key] = value
         key = self._make_key(chat_id)
 
         if REDIS_ENABLED and redis_client:
@@ -66,10 +104,16 @@ class PreferenceStore:
         self._memory_store[chat_id] = payload
         return merged
 
-    def update_preference(self, chat_id: str, key: str, value: str) -> Dict[str, str]:
+    def update_preference(self, chat_id: str, key: str, value: Any) -> Dict[str, Any]:
         """Update a single preference and return the new state."""
         current = self.get_preferences(chat_id)
-        current[key] = value
+        if key == "default_actions":
+            if isinstance(value, dict):
+                defaults = current.get("default_actions", {}).copy()
+                defaults.update(value)
+                current["default_actions"] = defaults
+        else:
+            current[key] = value
         self.set_preferences(chat_id, current)
         return current
 

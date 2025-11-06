@@ -108,6 +108,7 @@ async def process_audio_task(task_data: Dict):
     try:
         chat_id = data.get('chat_id')
         voice_data = data.get('voice_data', {})
+        task_id = data.get('task_id')
 
         file_path = voice_data.get('file_path')
         duration = voice_data.get('duration', 0)
@@ -133,7 +134,7 @@ async def process_audio_task(task_data: Dict):
             "processed_at": datetime.now().isoformat()
         }
 
-        messenger.send_result(chat_id, result)
+        messenger.send_result(chat_id, result, task_id)
 
         try:
             os.remove(file_path)
@@ -149,7 +150,7 @@ async def process_audio_task(task_data: Dict):
             "error": str(e),
             "duration": voice_data.get('duration', 0)
         }
-        messenger.send_result(data.get('chat_id'), error_result)
+        messenger.send_result(data.get('chat_id'), error_result, task_id)
 
         try:
             file_path = voice_data.get('file_path')
