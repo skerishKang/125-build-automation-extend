@@ -11,7 +11,7 @@ import logging
 import re
 import time
 from datetime import datetime, timedelta
-from typing import Any, Dict, Optional, List
+from typing import Any, Dict, Optional, List, Tuple
 from uuid import uuid4
 import zoneinfo
 from types import SimpleNamespace
@@ -47,9 +47,16 @@ from bots.main_bot.action_handlers import (  # type: ignore
 from bots.shared.telegram_utils import (  # type: ignore
     is_text_file,
     is_document_file,
+    is_audio_file,
 )
 from backend.services.gmail import GmailService  # type: ignore
 from backend.services import calendar_service  # type: ignore
+from backend.services import notion  # type: ignore
+from backend.services.drive_sync import (  # type: ignore
+    get_folder_files,
+    format_file_list,
+    check_new_files,
+)
 
 # Configure logging
 logging.basicConfig(
@@ -121,6 +128,161 @@ inline_code_pattern = re.compile(r"`(.+?)`")
 GMAIL_KEYWORDS = ["gmail", "메일", "이메일", "mail", "편지", "email"]
 CALENDAR_KEYWORDS = ["일정", "schedule", "calendar", "캘린더", "약속", "meeting", "회의", "모임", "event"]
 CALENDAR_ADD_KEYWORDS = ["등록", "추가", "잡아", "잡아줘", "만들어", "넣어", "일정잡아", "일정잡아줘", "등록해", "등록해줘", "추가해", "추가해줘", "예약해줘", "일정만들어"]
+DRIVE_KEYWORDS = [
+    "drive",
+    "드라이브",
+    "구글드라이브",
+    "google drive",
+    "google드라이브",
+]
+REMINDER_KEYWORDS = [
+    "remind",
+    "알림",
+    "리마인드",
+    "알려줘",
+    "깨워줘",
+]
+SETTINGS_KEYWORDS = [
+    "설정",
+    "preferences",
+    "환경설정",
+    "세팅",
+]
+BOTS_KEYWORDS = [
+    "전문봇",
+    "봇 목록",
+    "봇상태",
+    "bot status",
+    "bots",
+]
+SETTINGS_UNDO_KEYWORDS = [
+    "되돌려",
+    "원래",
+    "undo",
+    "취소",
+    "revert",
+]
+NOTION_REQUEST_KEYWORDS = [
+    "노션",
+    "notion",
+    "기록해",
+    "페이지",
+]
+INTEGRATION_KEYWORDS = {
+    "slack": ["슬랙", "slack"],
+    "notion": ["노션", "notion"],
+}
+ENABLE_KEYWORDS = ["켜", "켜줘", "활성", "on", "enable", "사용", "켜라"]
+DISABLE_KEYWORDS = ["꺼", "끄", "비활성", "off", "disable", "중지", "멈춰"]
+
+GMAIL_REQUEST_VERBS = [
+    "해줘",
+    "해주세요",
+    "해주세요",
+    "해줄래",
+    "알려줘",
+    "알려주세요",
+    "알려줄래",
+    "보여줘",
+    "보여주세요",
+    "보여줄래",
+    "읽어줘",
+    "읽어주세요",
+    "읽어줄래",
+    "확인해줘",
+    "확인해줘요",
+    "확인해",
+    "확인해줄래",
+    "확인해 주세요",
+    "가져와",
+    "check",
+    "show",
+    "fetch",
+    "list",
+    "display",
+]
+
+CALENDAR_REQUEST_VERBS = [
+    "해줘",
+    "해주세요",
+    "해주세요",
+    "알려줘",
+    "알려주세요",
+    "보여줘",
+    "보여주세요",
+    "확인해줘",
+    "확인해",
+    "정리해줘",
+    "찾아줘",
+    "검색해줘",
+    "추가해줘",
+    "추가해",
+    "등록해줘",
+    "등록해",
+    "예약해줘",
+    "예약해",
+    "check",
+    "show",
+    "fetch",
+    "find",
+    "schedule",
+    "add",
+]
+
+DRIVE_REQUEST_VERBS = [
+    "해줘",
+    "해주세요",
+    "알려줘",
+    "알려주세요",
+    "보여줘",
+    "보여주세요",
+    "확인해줘",
+    "확인해",
+    "목록",
+    "리스트",
+    "list",
+    "sync",
+    "동기화",
+    "업데이트",
+    "새",
+    "신규",
+    "찾아줘",
+    "검색",
+]
+
+REMINDER_REQUEST_VERBS = [
+    "해줘",
+    "해주세요",
+    "알려줘",
+    "알려주세요",
+    "보내줘",
+    "보내주세요",
+    "설정",
+    "set",
+    "remind",
+]
+SETTINGS_REQUEST_VERBS = [
+    "열어줘",
+    "열어",
+    "보여줘",
+    "보여",
+    "설정",
+    "manage",
+]
+BOTS_REQUEST_VERBS = [
+    "알려줘",
+    "보여줘",
+    "확인",
+    "status",
+]
+
+
+def _contains_intent_phrase(lowered: str, compact: str, phrases: List[str]) -> bool:
+    for phrase in phrases:
+        phrase_lower = phrase.lower()
+        if phrase_lower in lowered or phrase_lower in compact:
+            return True
+    return False
 
 
 def simplify_markdown(text: str) -> str:
@@ -133,7 +295,7 @@ def simplify_markdown(text: str) -> str:
     cleaned = bold_pattern.sub(r"\2", cleaned)
     cleaned = inline_code_pattern.sub(r"\1", cleaned)
     cleaned = cleaned.replace("**", "").replace("__", "")
-    cleaned = cleaned.replace("* ", "• ").replace("- ", "• ")
+    cleaned = cleaned.replace("* ", "- ").replace("- ", "- ")
     cleaned = cleaned.replace("\t", "    ")
     return cleaned.strip()
 
@@ -269,6 +431,9 @@ def parse_relative_date_time(text: str, reference: Optional[datetime] = None) ->
     }
 
 
+last_preference_states: Dict[str, Dict[str, Any]] = {}
+
+
 def extract_event_title(original_text: str) -> str:
     removal_patterns = [
         r'(\d{1,2})\s*월\s*(\d{1,2})\s*일\s*(에|에서|부터|까지)?',
@@ -301,6 +466,13 @@ def detect_natural_command(text: str) -> Optional[Dict[str, Any]]:
     compact = lowered.replace(" ", "")
 
     if any(keyword in lowered for keyword in GMAIL_KEYWORDS):
+        if "/gmail" in lowered:
+            return None
+
+        has_intent = _contains_intent_phrase(lowered, compact, GMAIL_REQUEST_VERBS)
+        if not has_intent:
+            return None
+
         args: List[str] = []
         count = None
 
@@ -339,6 +511,13 @@ def detect_natural_command(text: str) -> Optional[Dict[str, Any]]:
         return {"command": "gmail", "args": args}
 
     if any(keyword in lowered for keyword in CALENDAR_ADD_KEYWORDS) and any(keyword in lowered for keyword in CALENDAR_KEYWORDS + ["일정", "모임", "회의"]):
+        if "/calendar" in lowered:
+            return None
+
+        has_intent = _contains_intent_phrase(lowered, compact, CALENDAR_REQUEST_VERBS)
+        if not has_intent:
+            return None
+
         parsed = parse_relative_date_time(text)
         if not parsed:
             return None
@@ -352,6 +531,13 @@ def detect_natural_command(text: str) -> Optional[Dict[str, Any]]:
         return {"command": "calendar_add", "event_info": event_info}
 
     if any(keyword in lowered for keyword in CALENDAR_KEYWORDS):
+        if "/calendar" in lowered:
+            return None
+
+        has_intent = _contains_intent_phrase(lowered, compact, CALENDAR_REQUEST_VERBS)
+        if not has_intent:
+            return None
+
         args: List[str] = []
         query = None
 
@@ -389,6 +575,62 @@ def detect_natural_command(text: str) -> Optional[Dict[str, Any]]:
                 args.append("today")
 
         return {"command": "calendar", "args": args}
+
+    if any(keyword in lowered for keyword in DRIVE_KEYWORDS):
+        if "/drive" in lowered:
+            return None
+
+        has_intent = _contains_intent_phrase(lowered, compact, DRIVE_REQUEST_VERBS)
+        if not has_intent:
+            return None
+
+        if any(word in lowered for word in ["도움", "help", "가이드", "사용법"]):
+            return {"command": "drive_help"}
+
+        if any(word in lowered for word in ["새", "신규", "recent", "업로드", "올라온", "추가", "동기화", "sync"]):
+            return {"command": "drive_sync"}
+
+        return {"command": "drive_list"}
+
+    if any(keyword in lowered for keyword in REMINDER_KEYWORDS):
+        if "/remind" in lowered:
+            return None
+
+        has_intent = _contains_intent_phrase(lowered, compact, REMINDER_REQUEST_VERBS)
+        if not has_intent:
+            return None
+
+        return {"command": "reminder"}
+
+    if any(keyword in lowered for keyword in SETTINGS_KEYWORDS):
+        if "/settings" in lowered:
+            return None
+
+        has_intent = _contains_intent_phrase(lowered, compact, SETTINGS_REQUEST_VERBS)
+        if not has_intent:
+            return None
+
+        return {"command": "settings"}
+
+    if any(keyword in lowered for keyword in BOTS_KEYWORDS):
+        if "/bots" in lowered:
+            return None
+
+        has_intent = _contains_intent_phrase(lowered, compact, BOTS_REQUEST_VERBS)
+        if not has_intent:
+            return None
+
+        return {"command": "bots"}
+
+    if any(keyword in lowered for keyword in SETTINGS_UNDO_KEYWORDS):
+        return {"command": "settings_undo"}
+
+    if any(keyword in lowered for keyword in NOTION_REQUEST_KEYWORDS):
+        return {"command": "notion_log", "text": text}
+
+    preference_intent = parse_preference_intent(text)
+    if preference_intent:
+        return {"command": "settings_update", "preferences": preference_intent}
 
     return None
 
@@ -465,6 +707,13 @@ active_tasks: Dict[str, Dict[str, Dict[str, Any]]] = {}  # chat_id -> task_id ->
 user_sessions: Dict[str, Dict] = {}  # user_id -> session_info
 pending_results: Dict[str, Dict[str, Any]] = {}  # task_id -> {event, result}
 followup_tasks: Dict[str, Dict[str, Any]] = {}  # task_id -> follow-up context
+preference_history: Dict[str, List[Dict[str, Any]]] = {}
+
+PIPELINE_PRESET_LABELS = {
+    "full": "원본+요약 모두 저장",
+    "summary": "요약 결과만 저장",
+    "original": "원본 파일만 저장",
+}
 manual_result_listener_task: Dict[str, Optional[asyncio.Task]] = {"task": None}
 
 MODE_LABELS = {
@@ -505,45 +754,213 @@ TASK_TYPE_LABELS = {
     "audio": "오디오",
 }
 
+TASK_TYPE_KEYWORDS: Dict[str, List[str]] = {
+    "document": ["문서", "document", "파일", "docs"],
+    "image": ["이미지", "사진", "image", "photo"],
+    "audio": ["오디오", "음성", "녹음", "audio", "voice"],
+}
+
+ACTION_KEYWORDS: Dict[str, Dict[str, List[str]]] = {
+    "document": {
+        "document_original": ["원본", "원본만", "original"],
+        "document_summary": ["요약", "summary", "요약만"],
+        "document_original_summary": ["모두", "전체", "원본과", "풀", "full"],
+        "none": ["없어", "하지마", "건너뛰", "skip", "묻지말고"],
+    },
+    "image": {
+        "image_original": ["원본", "original"],
+        "image_summary": ["분석", "설명", "텍스트", "analysis"],
+        "image_original_summary": ["모두", "전체", "원본과", "풀", "full"],
+        "none": ["없어", "하지마", "건너뛰", "skip", "묻지말고"],
+    },
+    "audio": {
+        "audio_original": ["원본", "original"],
+        "audio_summary": ["전사", "요약", "텍스트", "transcript", "summary"],
+        "audio_original_summary": ["모두", "전체", "원본과", "풀", "full"],
+        "none": ["없어", "하지마", "건너뛰", "skip", "묻지말고"],
+    },
+}
+
+MODE_KEYWORDS: Dict[str, List[str]] = {
+    "auto": ["자동", "auto", "항상 실행", "묻지", "바로"],
+    "ask": ["묻고", "대화형", "질문", "ask"],
+    "skip": ["건너", "skip", "요약만", "보고만"],
+}
+
+PIPELINE_PRESETS: Dict[str, Dict[str, str]] = {
+    "full": {
+        "document": "document_original_summary",
+        "image": "image_original_summary",
+        "audio": "audio_original_summary",
+    },
+    "summary": {
+        "document": "document_summary",
+        "image": "image_summary",
+        "audio": "audio_summary",
+    },
+    "original": {
+        "document": "document_original",
+        "image": "image_original",
+        "audio": "audio_original",
+    },
+}
+
 FOLLOWUP_PROMPTS = {
     "document": (
         "📄 문서 분석이 완료되었습니다!\n"
         "후속 작업을 선택해주세요.\n"
-        "• Drive에 원본 저장\n"
-        "• 요약 텍스트 저장\n"
-        "• 아무 작업하지 않기"
+        "- Drive에 원본 저장\n"
+        "- 요약 텍스트 저장\n"
+        "- 아무 작업하지 않기"
     ),
     "image": (
         "🖼️ 이미지 분석이 완료되었습니다!\n"
         "후속 작업을 선택해주세요.\n"
-        "• 원본 이미지를 Drive에 저장\n"
-        "• 설명/분석 텍스트 저장\n"
-        "• 아무 작업하지 않기"
+        "- 원본 이미지를 Drive에 저장\n"
+        "- 설명/분석 텍스트 저장\n"
+        "- 아무 작업하지 않기"
     ),
     "audio": (
         "🎤 오디오 분석이 완료되었습니다!\n"
         "후속 작업을 선택해주세요.\n"
-        "• 원본 오디오 파일 저장\n"
-        "• 전사/요약 텍스트 저장\n"
-        "• 아무 작업하지 않기"
+        "- 원본 오디오 파일 저장\n"
+        "- 전사/요약 텍스트 저장\n"
+        "- 아무 작업하지 않기"
     ),
 }
+
+
+def _normalize_text(text: str) -> str:
+    return re.sub(r"[\s]+", " ", text.lower()).strip()
+
+
+def _match_any(text: str, keywords: List[str]) -> bool:
+    return any(keyword in text for keyword in keywords)
+
+
+def infer_task_type_from_text(text: str) -> Optional[str]:
+    normalized = _normalize_text(text)
+    for task_type, keywords in TASK_TYPE_KEYWORDS.items():
+        if _match_any(normalized, [keyword.lower() for keyword in keywords]):
+            return task_type
+    return None
+
+
+def infer_action_from_text(task_type: str, text: str) -> Optional[str]:
+    normalized = _normalize_text(text)
+    actions = ACTION_KEYWORDS.get(task_type, {})
+    for action_code, keywords in actions.items():
+        if _match_any(normalized, [keyword.lower() for keyword in keywords]):
+            return action_code
+    return None
+
+
+def infer_mode_from_text(text: str) -> Optional[str]:
+    normalized = _normalize_text(text)
+    for mode, keywords in MODE_KEYWORDS.items():
+        if _match_any(normalized, [keyword.lower() for keyword in keywords]):
+            return mode
+    return None
+
+
+def infer_pipeline_from_text(text: str) -> Optional[str]:
+    normalized = _normalize_text(text)
+    pipeline_keywords = {
+        "full": ["모두", "전체", "풀", "full", "원본과"],
+        "summary": ["요약", "summary", "간단", "텍스트만"],
+        "original": ["원본만", "원본", "original"],
+    }
+    for preset, keywords in pipeline_keywords.items():
+        if _match_any(normalized, [keyword.lower() for keyword in keywords]):
+            return preset
+    return None
+
+
+def parse_preference_intent(text: str) -> Optional[Dict[str, Any]]:
+    normalized = _normalize_text(text)
+    triggers = ["앞으로", "항상", "기본", "default", "설정", "자동", "pipeline", "파이프라인"]
+    for keywords in INTEGRATION_KEYWORDS.values():
+        triggers.extend(keywords)
+    if not _match_any(normalized, triggers):
+        return None
+
+    intent: Dict[str, Any] = {}
+
+    mode = infer_mode_from_text(text)
+    if mode:
+        intent["mode"] = mode
+
+    pipeline = infer_pipeline_from_text(text)
+    if pipeline:
+        intent["pipeline"] = pipeline
+
+    task_type = infer_task_type_from_text(text)
+    action = None
+
+    if task_type:
+        action = infer_action_from_text(task_type, text)
+    else:
+        # If no specific task type, but mentions summary/original keywords, apply pipeline
+        for candidate_type in TASK_TYPE_KEYWORDS:
+            candidate_action = infer_action_from_text(candidate_type, text)
+            if candidate_action and candidate_action != "none":
+                task_type = candidate_type
+                action = candidate_action
+                break
+
+    if task_type and action:
+        intent.setdefault("actions", {})[task_type] = action
+    elif task_type and "pipeline" in intent:
+        preset_actions = PIPELINE_PRESETS.get(intent["pipeline"], {})
+        if preset_actions:
+            intent.setdefault("actions", {})[task_type] = preset_actions.get(task_type)
+
+    integration_changes: Dict[str, bool] = {}
+    for integration, keywords in INTEGRATION_KEYWORDS.items():
+        if _match_any(normalized, [keyword.lower() for keyword in keywords]):
+            if _match_any(normalized, ENABLE_KEYWORDS):
+                integration_changes[integration] = True
+            elif _match_any(normalized, DISABLE_KEYWORDS):
+                integration_changes[integration] = False
+
+    if integration_changes:
+        intent["integrations"] = integration_changes
+
+    if not intent:
+        return None
+
+    return intent
 
 
 def build_settings_message(prefs: Dict[str, Any]) -> str:
     """Create user-facing summary of current automation preferences."""
     mode_label = MODE_LABELS.get(prefs.get("mode", ""), "미설정")
     defaults = build_default_actions_summary(prefs)
+    integrations = prefs.get("integrations", {})
+    slack_state = "✅" if integrations.get("slack", True) else "❌"
+    notion_state = "✅" if integrations.get("notion", False) else "❌"
 
     lines = [
         "⚙️ 현재 하이브리드 자동화 설정",
-        f"• 기본 모드: {mode_label}",
+        f"- 기본 모드: {mode_label}",
         "",
         f"문서 자동 작업: {format_action_label(defaults['document'])}",
+        "  └ 문서 업로드 후 어떤 후속 작업을 기본 적용할지 선택합니다.",
         f"이미지 자동 작업: {format_action_label(defaults['image'])}",
+        "  └ 이미지 업로드 시 OCR/요약/저장 등 기본 동작을 설정합니다.",
         f"오디오 자동 작업: {format_action_label(defaults['audio'])}",
+        "  └ 음성 메시지 처리 후 자동으로 실행할 후속 액션을 지정합니다.",
         "",
-        "원하는 옵션을 선택해 설정을 변경할 수 있습니다.",
+        "🚀 파이프라인 프리셋",
+        f"- 풀: {PIPELINE_PRESET_LABELS['full']} (원본 업로드 + 요약 + 노션/슬랙)",
+        f"- 요약: {PIPELINE_PRESET_LABELS['summary']} (요약 위주, 원본 제외)",
+        f"- 원본: {PIPELINE_PRESET_LABELS['original']} (파일 보존, 요약 생략)",
+        "",
+        "🔗 통합 설정",
+        f"- Slack 알림: {slack_state} (파일 처리 결과를 Slack에도 발송)",
+        f"- Notion 기록: {notion_state} (요약·추출 결과를 자동 기록)",
+        "",
+        "아래 인라인 버튼으로 모드·자동 작업·통합 설정을 즉시 변경할 수 있어요.",
     ]
     return "\n".join(lines)
 
@@ -583,6 +1000,23 @@ def build_settings_keyboard(prefs: Dict[str, Any]) -> InlineKeyboardMarkup:
         )
         rows.append(buttons)
 
+    preset_buttons = [
+        InlineKeyboardButton("풀 파이프라인", callback_data="pref_pipeline|full"),
+        InlineKeyboardButton("요약 파이프라인", callback_data="pref_pipeline|summary"),
+        InlineKeyboardButton("원본 파이프라인", callback_data="pref_pipeline|original"),
+    ]
+    rows.append(preset_buttons)
+    integrations = prefs.get("integrations", {})
+    slack_label = "Slack 알림 ON" if integrations.get("slack", True) else "Slack 알림 OFF"
+    notion_label = "Notion 기록 ON" if integrations.get("notion", False) else "Notion 기록 OFF"
+    rows.append([
+        InlineKeyboardButton(slack_label, callback_data="pref_integration|slack|toggle"),
+        InlineKeyboardButton(notion_label, callback_data="pref_integration|notion|toggle"),
+    ])
+    rows.append([
+        InlineKeyboardButton("되돌리기", callback_data="pref_undo|"),
+    ])
+
     return InlineKeyboardMarkup(rows)
 
 
@@ -603,12 +1037,27 @@ def build_followup_keyboard(task_type: str, task_id: str) -> InlineKeyboardMarku
         InlineKeyboardButton("설정 열기", callback_data="pref_open|global"),
     ]
 
-    rows = [once_row, auto_row, extra_row]
+    preset_row = [
+        InlineKeyboardButton("풀 파이프라인", callback_data="pref_pipeline|full"),
+        InlineKeyboardButton("요약 파이프라인", callback_data="pref_pipeline|summary"),
+        InlineKeyboardButton("원본 파이프라인", callback_data="pref_pipeline|original"),
+    ]
+
+    rows = [once_row, auto_row, preset_row, extra_row]
     return InlineKeyboardMarkup(rows)
 
 
 async def prompt_followup(bot: Bot, chat_id: str, task_id: str, task_type: str) -> None:
     message = FOLLOWUP_PROMPTS.get(task_type, "후속 작업을 선택해주세요.")
+    prefs = preference_store.get_preferences(chat_id)
+    defaults = build_default_actions_summary(prefs)
+    mode_label = MODE_LABELS.get(prefs.get("mode", ""), "미설정")
+    current_default = format_action_label(defaults.get(task_type, "none"))
+    message = (
+        f"{message}\n\n"
+        f"현재 모드: {mode_label}\n"
+        f"기본 {TASK_TYPE_LABELS.get(task_type, '')} 작업: {current_default}"
+    )
 
     try:
         await bot.send_message(
@@ -678,9 +1127,120 @@ async def manual_result_listener(bot: Bot) -> None:
     while True:
         await poll_result_messages(dummy_context)
         await asyncio.sleep(1.0)
-# Initialize messenger
-messenger = BotMessenger("main_bot")
-gemini = GeminiAnalyzer(GEMINI_API_KEY)
+
+
+# Constants for preference history
+PREFERENCE_HISTORY_LIMIT = 5
+
+
+async def handle_settings_update(update: Update, context: ContextTypes.DEFAULT_TYPE, intent: Dict[str, Any]) -> None:
+    chat_id = str(update.effective_chat.id)
+    previous = preference_store.get_preferences(chat_id)
+    preference_history.setdefault(chat_id, []).append(previous)
+    preference_history[chat_id] = preference_history[chat_id][-PREFERENCE_HISTORY_LIMIT:]
+
+    updates: Dict[str, Any] = {}
+    mode = intent.get("mode")
+    if mode:
+        updates["mode"] = mode
+
+    actions = intent.get("actions")
+    if actions:
+        defaults = build_default_actions_summary(previous)
+        defaults.update(actions)
+        updates["default_actions"] = defaults
+
+    pipeline = intent.get("pipeline")
+    if pipeline:
+        preset = PIPELINE_PRESETS.get(pipeline, {})
+        if preset:
+            defaults = build_default_actions_summary(previous)
+            defaults.update(preset)
+            updates.setdefault("default_actions", defaults)
+            updates.setdefault("mode", previous.get("mode", "auto"))
+
+    integrations = intent.get("integrations")
+    if integrations:
+        current_integrations = previous.get("integrations", {}).copy()
+        current_integrations.update(integrations)
+        updates["integrations"] = current_integrations
+
+    if not updates:
+        await update.message.reply_text("⚠️ 적용할 설정을 찾지 못했어요.")
+        return
+
+    preference_store.set_preferences(chat_id, updates)
+    prefs = preference_store.get_preferences(chat_id)
+
+    summary_lines = ["✅ 설정이 업데이트되었습니다!", f"- 모드: {MODE_LABELS.get(prefs.get('mode', ''), '미설정')}" ]
+
+    defaults = build_default_actions_summary(prefs)
+    summary_lines.append("- 기본 작업 요약:")
+    summary_lines.append(f"  - 문서: {format_action_label(defaults['document'])}")
+    summary_lines.append(f"  - 이미지: {format_action_label(defaults['image'])}")
+    summary_lines.append(f"  - 오디오: {format_action_label(defaults['audio'])}")
+
+    if pipeline:
+        summary_lines.append(f"- 파이프라인: {PIPELINE_PRESET_LABELS.get(pipeline, pipeline)}")
+
+    if integrations:
+        for name, state in integrations.items():
+            label = "ON" if state else "OFF"
+            summary_lines.append(f"- {name.title()} 통합: {label}")
+
+    await update.message.reply_text("\n".join(summary_lines))
+
+    await update.message.reply_text(
+        build_settings_message(prefs),
+        reply_markup=build_settings_keyboard(prefs),
+    )
+
+    for task_id, record in list(followup_tasks.items()):
+        if record.get("chat_id") == chat_id:
+            await apply_preferences_to_task(context.bot, chat_id, task_id, record.get("task_type"), prefs)
+
+
+async def handle_settings_undo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    chat_id = str(update.effective_chat.id)
+    history = preference_history.get(chat_id, [])
+    if not history:
+        await update.message.reply_text("되돌릴 설정이 없습니다.")
+        return
+
+    previous = history.pop()
+    preference_store.set_preferences(chat_id, previous)
+    prefs = preference_store.get_preferences(chat_id)
+    await update.message.reply_text("↩️ 설정을 이전 상태로 되돌렸어요.")
+    await update.message.reply_text(
+        build_settings_message(prefs),
+        reply_markup=build_settings_keyboard(prefs),
+    )
+
+
+async def handle_bots(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle /bots command - Check specialized bot status"""
+    status_text = """
+전문봇 상태 요약
+
+📄 문서봇
+- 역할: PDF, DOCX, TXT, CSV 등을 전문 분석
+- 기능: 텍스트 추출 → Gemini 요약 → 후속 액션 버튼 제공
+- 권장 사용: 회의록/보고서 업로드 후 노션 기록·슬랙 알림 자동화
+
+🎧 오디오봇
+- 역할: OGG, MP3, WAV 등 음성 메시지 처리
+- 기능: 길이별로 Gemini 멀티모달 or Whisper+Gemini 조합 활용
+- 권장 사용: 음성 메모 → 텍스트 요약 → 리마인더/Drive 업로드 연계
+
+🖼️ 사진봇
+- 역할: JPG, PNG 등 이미지 분석 및 OCR 처리
+- 기능: 이미지 설명, 텍스트 추출, 후속 태스크 추천
+- 권장 사용: 화이트보드 사진 → 텍스트 추출 → Notion 기록
+
+사용 방법: 메인봇 대화창에 파일을 업로드하면 자동으로 적절한 전문봇이 실행되고, 후속 작업 버튼이 함께 제공됩니다.
+"""
+
+    await update.message.reply_text(status_text)
 
 
 async def handle_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -689,40 +1249,29 @@ async def handle_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     name = user.first_name or "사용자"
     chat_id = update.effective_chat.id
 
-    # Debounce mechanism
-    last_welcome_sent = context.chat_data.get('last_welcome_sent', 0)
-    current_time = time.time()
-
-    if current_time - last_welcome_sent < 5:  # If sent within the last 5 seconds
-        logger.info(f"Skipping duplicate welcome message for chat {chat_id}")
-        return
-
     welcome_message = f"""
-안녕하세요 {name}님! 메인봇이에요!
+안녕하세요 {name}님! 👋 메인봇입니다.
 
-저는 전문봇들과 협력하는 메인봇입니다!
+📌 핵심 기능
+- 자유 대화 & 요약 (Gemini 2.5 Flash-Lite)
+- 문서/이미지/음성 업로드 자동 분석
+- Gmail·캘린더·Drive 모니터링 및 연동
+- Slack/Notion 통합 기록
 
-사용 가능한 기능:
-• 자유 대화 (Gemini AI)
-• 문서 분석 (PDF, DOCX, TXT 등)
-• 음성 처리 (OGG, MP3, WAV 등)
-• 이미지 분석 (JPG, PNG 등)
+⚙️ 추천 단계
+1) /settings 로 기본 자동화와 통합 여부를 설정하세요.
+2) /bots 로 전문봇 상태와 역할을 확인하세요.
+3) /status 로 Redis, Gemini 등 런타임 상태를 점검하세요.
 
-명령어:
-• /help - 도움말 보기
-• /status - 봇 상태 확인
-• /bots - 전문봇 목록
-• /gmail [개수] [mark] - Gmail 확인
-• /calendar [today|tomorrow|week|upcoming|search 키워드] - 일정 보기
+💡 사용 팁
+- "메일 좀 보여줘", "내일 일정 잡아줘" 같은 자연어 명령도 인식합니다.
+- 파일 업로드 후 메시지로 후속 액션 버튼이 제공됩니다.
+- `/help` 로 전체 명령어와 활용법을 확인할 수 있습니다.
 
-파일 업로드:
-문서, 이미지, 음성 파일을 업로드하면 전문봇이 분석해드립니다!
-
-developed by PadiemAI, LimoneAI
+언제든지 필요한 자동화를 말씀해 주세요!
     """
 
     await update.message.reply_text(welcome_message)
-    context.chat_data['last_welcome_sent'] = current_time
     logger.info(f"User {user.id} started the bot")
 
 
@@ -748,15 +1297,15 @@ async def handle_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
 - 사진봇이 이미지를 분석하고 설명해드립니다
 
 추가 명령어
-• /status - 현재 봇 상태
-• /bots - 전문봇 상태 확인
-• /gmail [개수] [mark] - 읽지 않은 Gmail 확인 (mark 옵션 시 읽음 처리)
-• /calendar [today|tomorrow|week|upcoming|search 키워드] - 구글 캘린더 일정 확인
+- /status - 현재 봇 상태
+- /bots - 전문봇 상태 확인
+- /gmail [개수] [mark] - 읽지 않은 Gmail 확인 (mark 옵션 시 읽음 처리)
+- /calendar [today|tomorrow|week|upcoming|search 키워드] - 구글 캘린더 일정 확인
 
 사용 팁
-• 여러 파일을 동시에 업로드 가능
-• 파일 크기는 최대 50MB까지 지원
-• 분석 중에도 다른 대화 계속 가능!
+- 여러 파일을 동시에 업로드 가능
+- 파일 크기는 최대 50MB까지 지원
+- 분석 중에도 다른 대화 계속 가능!
     """
 
     await update.message.reply_text(help_text)
@@ -772,31 +1321,44 @@ async def handle_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     chat_tasks = active_tasks.get(chat_id, {})
     if chat_tasks:
-        lines = ["[STATS] **현재 작업:**"]
+        lines = ["[STATS] 현재 작업:"]
         for idx, info in enumerate(chat_tasks.values(), 1):
             lines.extend([
-                f"• #{idx} 타입: {info.get('type', 'N/A')}",
+                f"- #{idx} 타입: {info.get('type', 'N/A')}",
                 f"  상태: {info.get('status', 'N/A')}",
                 f"  시작: {info.get('start_time', 'N/A')}",
             ])
         active_task_info = "\n".join(lines)
 
+    redis_status = "활성"
+    if not REDIS_ENABLED:
+        redis_status = "비활성 (환경 변수: REDIS_ENABLED=false)"
+    else:
+        try:
+            messenger.redis_client.ping()  # type: ignore[attr-defined]
+        except Exception:
+            redis_status = "연결 실패"
+
+    gemini_status = "활성" if GEMINI_API_KEY else "비활성"
+    supabase_status = "활성" if SUPABASE_URL and SUPABASE_KEY else "미설정"
+
     status_text = f"""
 메인봇 상태
 
 연결 상태:
-• 메인봇: 실행 중
-• Redis: {REDIS_HOST}:{REDIS_PORT}
-• Gemini AI: {'활성' if GEMINI_API_KEY else '비활성'}
+- 메인봇: 실행 중
+- Redis: {REDIS_HOST}:{REDIS_PORT} ({redis_status})
+- Gemini AI: {gemini_status}
+- Supabase 메모리: {supabase_status}
 
 작업 현황:
-• 활성 작업: {task_count}개
+- 활성 작업: {task_count}개
 {active_task_info}
 
 전문봇:
-• 문서봇: 준비 완료
-• 오디오봇: 준비 완료
-• 사진봇: 준비 완료
+- 문서봇: 준비 완료
+- 오디오봇: 준비 완료
+- 사진봇: 준비 완료
     """
 
     await update.message.reply_text(status_text)
@@ -813,31 +1375,28 @@ async def handle_settings(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
-async def handle_bots(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle /bots command - Check specialized bot status"""
-    status_text = """
-전문봇 상태
+async def handle_notion_log(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str) -> None:
+    chat_id = update.effective_chat.id
+    user = update.effective_user
 
-문서봇
-• 역할: PDF, DOCX, TXT 등 문서 전문 분석
-• 기능: 텍스트 추출, AI 분석, 요약
-• 상태: 대기 중
+    title = f"대화 기록 - {datetime.now().strftime('%Y-%m-%d %H:%M')}"
+    content = text.strip()
 
-오디오봇
-• 역할: OGG, MP3, WAV 등 음성 전문 처리
-• 기능: 음성 인식(Whisper), AI 요약
-• 상태: 대기 중
+    if len(content) > 2000:
+        content = content[:2000] + "..."
 
-사진봇
-• 역할: JPG, PNG 등 이미지 전문 분석
-• 기능: 이미지 설명, OCR, AI 분석
-• 상태: 대기 중
+    blocks = [
+        notion.build_paragraph_block(f"채팅 ID: {chat_id}"),
+        notion.build_paragraph_block(f"사용자: {user.full_name if user else '알 수 없음'}"),
+        notion.build_paragraph_block(""),
+        notion.build_paragraph_block(content),
+    ]
 
-사용법:
-메인봇에 파일을 업로드하면 해당 전문봇이 자동으로 처리합니다!
-    """
-
-    await update.message.reply_text(status_text)
+    success = notion.create_page(title, blocks)
+    if success:
+        await update.message.reply_text("🗂️ 노션에 기록했어요!")
+    else:
+        await update.message.reply_text("⚠️ 노션에 기록하지 못했어요. 설정을 확인해주세요.")
 
 
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -872,33 +1431,49 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if command == "calendar_add":
             await handle_calendar_add(update, context, detected["event_info"])
             return
+        if command == "drive_help":
+            await handle_drive_help(update, context)
+            return
+        if command == "drive_list":
+            await handle_drive_list(update, context, args_override=args)
+            return
+        if command == "drive_sync":
+            await handle_drive_sync(update, context)
+            return
+        if command == "reminder":
+            await handle_reminder(update, context, original_text=text)
+            return
+        if command == "settings_update":
+            await handle_settings_update(update, context, detected["preferences"])
+            return
+        if command == "settings_undo":
+            await handle_settings_undo(update, context)
+            return
+        if command == "notion_log":
+            await handle_notion_log(update, context, detected.get("text", text))
+            return
+        if command == "settings":
+            await handle_settings(update, context)
+            return
+        if command == "bots":
+            await handle_bots(update, context)
+            return
 
     lowered = text.lower()
 
     # Detect natural language commands
-    detected = detect_natural_command(text)
-    if detected:
-        if detected["command"] == "gmail":
-            await handle_gmail(update, context, args_override=detected["args"])
-            return
-        if detected["command"] == "calendar":
-            await handle_calendar(update, context, args_override=detected["args"])
-            return
-        if detected["command"] == "calendar_add":
-            await handle_calendar_add(update, context, detected["event_info"])
-            return
-
     # Show usage help if keywords detected
-    if any(keyword in lowered for keyword in GMAIL_KEYWORDS):
+    if "/gmail" in lowered:
         await update.message.reply_text(
             "메일을 확인하려면 `/gmail [개수] [mark]` 명령을 사용해주세요.",
-            parse_mode="Markdown"
+            parse_mode="Markdown",
         )
         return
-    if any(keyword in lowered for keyword in CALENDAR_KEYWORDS):
+
+    if "/calendar" in lowered:
         await update.message.reply_text(
             "일정을 확인하려면 `/calendar [today|tomorrow|week|upcoming|search 키워드]` 명령을 사용해주세요.",
-            parse_mode="Markdown"
+            parse_mode="Markdown",
         )
         return
 
@@ -1164,14 +1739,96 @@ async def handle_calendar_add(update: Update, context: ContextTypes.DEFAULT_TYPE
 
     lines = [
         "✅ 일정이 등록되었습니다!",
-        f"• 제목: {summary}",
-        f"• 시작: {start_str}",
-        f"• 종료: {end_str}",
+        f"- 제목: {summary}",
+        f"- 시작: {start_str}",
+        f"- 종료: {end_str}",
     ]
     if link:
-        lines.append(f"• 링크: {link}")
+        lines.append(f"- 링크: {link}")
 
     await context.bot.send_message(chat_id=chat_id, text="\n".join(lines))
+    return
+
+
+async def handle_drive_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle /drive command - show Drive usage guide."""
+    help_text = (
+        "📁 **Google Drive 사용 가이드**\n\n"
+        "**명령어**\n"
+        "- `/drive` - 이 도움말 보기\n"
+        "- `/drivelist` - 기본 폴더 파일 목록 보기\n"
+        "- `/driveget <file_id>` - 특정 파일 다운로드\n"
+        "- `/drivesync` - 새로 업로드된 파일 확인\n\n"
+        "**팁**\n"
+        "- 폴더 ID를 알고 있다면 `/drivelist <folder_id>` 로 하위 폴더도 확인할 수 있어요.\n"
+        "- 새 파일이 올라왔는지 빠르게 확인하려면 `/drivesync` 를 사용해주세요."
+    )
+
+    await update.message.reply_text(help_text)
+
+
+async def handle_drive_list(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    args_override: Optional[List[str]] = None,
+):
+    """Handle /drivelist command - list Google Drive files."""
+    args = args_override if args_override is not None else (getattr(context, "args", []) or [])
+    folder_id = args[0] if args else None
+
+    progress = await update.message.reply_text("📁 드라이브 파일 목록을 불러오는 중입니다...")
+
+    try:
+        files = await asyncio.to_thread(get_folder_files, folder_id)
+        message = await asyncio.to_thread(format_file_list, files)
+        await context.bot.edit_message_text(
+            chat_id=progress.chat_id,
+            message_id=progress.message_id,
+            text=message,
+            parse_mode="Markdown",
+        )
+    except Exception as exc:  # pragma: no cover - 방어적 처리
+        logger.error("Drive list error: %s", exc)
+        await context.bot.edit_message_text(
+            chat_id=progress.chat_id,
+            message_id=progress.message_id,
+            text="❌ 드라이브 목록을 불러오지 못했습니다.",
+        )
+
+
+async def handle_drive_sync(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle /drivesync command - check for new Drive files."""
+    progress = await update.message.reply_text("🔍 드라이브 새 파일을 확인하는 중입니다...")
+
+    try:
+        new_files = await asyncio.to_thread(check_new_files)
+
+        if not new_files:
+            text = "📭 새로 업로드된 파일이 없습니다."
+        else:
+            lines = [f"🆕 새 파일 {len(new_files)}개 발견!"]
+            for index, file in enumerate(new_files, 1):
+                name = file.get("name", "이름 없음")
+                file_id = file.get("id", "-")
+                mime_type = file.get("mimeType", "-")
+                lines.append(f"{index}. {name} ({mime_type})\n   ID: `{file_id}`")
+            text = "\n".join(lines)
+
+        await context.bot.edit_message_text(
+            chat_id=progress.chat_id,
+            message_id=progress.message_id,
+            text=text,
+            parse_mode="Markdown",
+        )
+    except Exception as exc:  # pragma: no cover - 방어적 처리
+        logger.error("Drive sync error: %s", exc)
+        await context.bot.edit_message_text(
+            chat_id=progress.chat_id,
+            message_id=progress.message_id,
+            text="❌ 드라이브 새 파일을 확인하는 중 오류가 발생했습니다.",
+        )
+
+
 async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
     logger.info("handle_document entered")
     """Handle document uploads"""
@@ -1285,6 +1942,22 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     asyncio.create_task(process_document_result())
     return
+
+
+async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle standalone audio files (non-voice) uploaded by users."""
+    audio = update.message.audio
+    if not audio:
+        return
+
+    logger.info("handle_audio entered")
+    logger.info(
+        "Audio upload: %s (%s bytes)",
+        getattr(audio, "file_name", None) or audio.file_id,
+        getattr(audio, "file_size", 0),
+    )
+
+    await handle_document_as_audio(update, context, audio)
 
 
 async def handle_document_as_audio(update: Update, context: ContextTypes.DEFAULT_TYPE, doc):
@@ -1737,6 +2410,69 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
             reply_markup=build_settings_keyboard(prefs),
         )
 
+    elif data.startswith("pref_pipeline|"):
+        _, pipeline = data.split("|", 1)
+        preset = PIPELINE_PRESETS.get(pipeline)
+        if not preset:
+            await query.edit_message_text("⚠️ 해당 파이프라인을 찾지 못했습니다.")
+            return
+
+        previous = preference_store.get_preferences(chat_id)
+        preference_history.setdefault(chat_id, []).append(previous)
+        preference_history[chat_id] = preference_history[chat_id][-PREFERENCE_HISTORY_LIMIT:]
+
+        defaults = build_default_actions_summary(previous)
+        defaults.update(preset)
+        preference_store.set_preferences(chat_id, {
+            "default_actions": defaults,
+            "mode": "auto",
+        })
+
+        prefs = preference_store.get_preferences(chat_id)
+        await query.edit_message_text(
+            f"✅ {PIPELINE_PRESET_LABELS.get(pipeline, pipeline)} 적용 완료!",
+        )
+        await query.message.reply_text(
+            build_settings_message(prefs),
+            reply_markup=build_settings_keyboard(prefs),
+        )
+        await apply_preferences_to_pending_tasks(context.bot, chat_id, None, prefs)
+
+    elif data.startswith("pref_undo|"):
+        history = preference_history.get(chat_id, [])
+        if not history:
+            await query.edit_message_text("되돌릴 설정이 없습니다.")
+            return
+
+        previous = history.pop()
+        preference_store.set_preferences(chat_id, previous)
+        prefs = preference_store.get_preferences(chat_id)
+        await query.edit_message_text("↩️ 설정을 이전 상태로 되돌렸어요.")
+        await query.message.reply_text(
+            build_settings_message(prefs),
+            reply_markup=build_settings_keyboard(prefs),
+        )
+
+    elif data.startswith("pref_integration|"):
+        _, integration, action = data.split("|", 2)
+        prefs = preference_store.get_preferences(chat_id)
+        integrations = prefs.get("integrations", {}).copy()
+        if action == "toggle":
+            current = integrations.get(integration, True)
+            integrations[integration] = not current
+        else:
+            integrations[integration] = action == "on"
+
+        preference_history.setdefault(chat_id, []).append(prefs)
+        preference_history[chat_id] = preference_history[chat_id][-PREFERENCE_HISTORY_LIMIT:]
+
+        preference_store.set_preferences(chat_id, {"integrations": integrations})
+        updated = preference_store.get_preferences(chat_id)
+        await query.edit_message_text(
+            build_settings_message(updated),
+            reply_markup=build_settings_keyboard(updated),
+        )
+
 
 async def poll_result_messages(context: CallbackContext) -> None:
     """Periodically consume result messages from Redis and dispatch to users."""
@@ -1944,9 +2680,11 @@ def main():
     application.add_handler(CommandHandler("gmail", handle_gmail))
     application.add_handler(CommandHandler("calendar", handle_calendar))
     application.add_handler(CommandHandler("settings", handle_settings))
+    application.add_handler(CommandHandler("remind", handle_reminder_command))
 
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
     application.add_handler(MessageHandler(filters.Document.ALL, handle_document))
+    application.add_handler(MessageHandler(filters.AUDIO, handle_audio))
     application.add_handler(MessageHandler(filters.VOICE, handle_voice))
     application.add_handler(MessageHandler(filters.PHOTO, handle_photo))
     application.add_handler(CallbackQueryHandler(handle_callback_query))

@@ -1,22 +1,66 @@
-"""
-Telegram Utilities - Shared Telegram Bot Functions
-"""
-import os
+"""Telegram Utilities - Shared Telegram Bot Functions."""
+
+from __future__ import annotations
+
 import logging
+import os
 import tempfile
-from telegram import Update, Bot
-from telegram.ext import Application
 from typing import Optional
+
+import httpx
+from telegram import Bot
+from telegram.ext import Application
+from telegram.request import HTTPXRequest
 
 logger = logging.getLogger("telegram_utils")
 
 
+class PatchedHTTPXRequest(HTTPXRequest):
+    """HTTPX 0.28+ 에서 제거된 `proxy` 인자 호환을 위한 래퍼."""
+
+    def _build_client(self) -> httpx.AsyncClient:  # type: ignore[override]
+        kwargs = dict(self._client_kwargs)
+
+        proxy_value = kwargs.pop("proxy", None)
+        if proxy_value is not None:
+            kwargs["proxies"] = proxy_value
+
+        try:
+            return httpx.AsyncClient(**kwargs)
+        except TypeError as exc:
+            if "proxy" in str(exc):
+                logger.debug(
+                    "proxy 인자를 제거하고 httpx.AsyncClient를 재시도합니다: %s",
+                    exc,
+                )
+                kwargs.pop("proxies", None)
+                return httpx.AsyncClient(**kwargs)
+            raise
+
+
+def _build_compatible_request() -> HTTPXRequest:
+    """현재 httpx 버전에 맞는 Request 객체를 생성."""
+
+    try:
+        return PatchedHTTPXRequest()
+    except Exception as exc:  # pragma: no cover - 안전장치
+        logger.warning("PatchedHTTPXRequest 생성 실패, 기본 HTTPXRequest 사용: %s", exc)
+        return HTTPXRequest()
+
+
 class TelegramClient:
-    """Shared Telegram bot client"""
+    """Shared Telegram bot client."""
 
     def __init__(self, bot_token: str):
-        self.bot = Bot(token=bot_token)
-        self.application = Application.builder().token(bot_token).build()
+        request = _build_compatible_request()
+        self.bot = Bot(token=bot_token, request=request)
+        self.application = (
+            Application.builder()
+            .token(bot_token)
+            .request(request)
+            .build()
+        )
+        self._request = request
 
     async def send_message(self, chat_id: str, text: str, parse_mode: str = None) -> Optional[int]:
         """Send message to chat"""

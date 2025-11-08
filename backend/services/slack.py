@@ -1,12 +1,18 @@
 """
-Slack API 키 검증 서비스
-Slack Bot Token의 유효성을 확인합니다.
+Slack API 유틸리티 - 토큰 검증 및 메시지 전송
 """
-import requests
-import logging # Import the logging module
+import logging
+import os
+from typing import Dict, Any, Optional
 
-# Get the logger instance for this module
+import requests
+
 logger = logging.getLogger("slack_service")
+
+SLACK_WEBHOOK_URL = os.getenv("SLACK_WEBHOOK_URL")
+SLACK_BOT_TOKEN = os.getenv("SLACK_BOT_TOKEN")
+SLACK_CHANNEL = os.getenv("SLACK_CHANNEL")
+SLACK_USERNAME = os.getenv("SLACK_USERNAME", "Limone Bot")
 
 def verify_slack_token(token: str) -> dict:
     """
@@ -129,3 +135,60 @@ def get_team_info(token: str) -> dict:
     else:
         # verify_slack_token에서 이미 로깅되었으므로 여기서는 추가 로깅 불필요
         return None
+
+
+def _post_webhook(payload: Dict[str, Any]) -> bool:
+    try:
+        response = requests.post(SLACK_WEBHOOK_URL, json=payload, timeout=10)
+        if response.status_code >= 400:
+            logger.error("Slack webhook error %s: %s", response.status_code, response.text[:200])
+            return False
+        return True
+    except requests.RequestException as exc:  # pragma: no cover - 네트워크 장애 대비
+        logger.error("Slack webhook request failed: %s", exc)
+        return False
+
+
+def _post_chat_message(payload: Dict[str, Any]) -> bool:
+    headers = {
+        "Authorization": f"Bearer {SLACK_BOT_TOKEN}",
+        "Content-Type": "application/json; charset=utf-8",
+    }
+    try:
+        response = requests.post("https://slack.com/api/chat.postMessage", json=payload, headers=headers, timeout=10)
+        data = response.json()
+        if not data.get("ok"):
+            logger.error("Slack chat.postMessage error: %s", data.get("error", "unknown"))
+            return False
+        return True
+    except Exception as exc:  # pragma: no cover - 네트워크 장애 대비
+        logger.error("Slack chat.postMessage request failed: %s", exc)
+        return False
+
+
+def send_message(text: str, *, blocks: Optional[list] = None, channel: Optional[str] = None) -> bool:
+    """Slack 채널/웹훅으로 메시지를 전송합니다."""
+    if not text:
+        return False
+
+    if SLACK_WEBHOOK_URL:
+        payload: Dict[str, Any] = {"text": text}
+        if blocks:
+            payload["blocks"] = blocks
+        if SLACK_USERNAME:
+            payload["username"] = SLACK_USERNAME
+        return _post_webhook(payload)
+
+    if SLACK_BOT_TOKEN and (channel or SLACK_CHANNEL):
+        payload = {
+            "channel": channel or SLACK_CHANNEL,
+            "text": text,
+        }
+        if blocks:
+            payload["blocks"] = blocks
+        if SLACK_USERNAME:
+            payload["username"] = SLACK_USERNAME
+        return _post_chat_message(payload)
+
+    logger.debug("Slack integration not configured. Message skipped.")
+    return False

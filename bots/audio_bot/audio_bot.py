@@ -9,7 +9,7 @@ import json
 import logging
 import tempfile
 from datetime import datetime
-from typing import Dict, List, Optional
+from typing import Dict, Optional
 
 # Add parent directories to path for imports
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
@@ -66,41 +66,6 @@ async def download_audio_from_telegram(file_id: str, file_name: str) -> str:
         raise
 
 
-async def transcribe_audio(file_path: str) -> str:
-    """Transcribe audio file using Whisper"""
-    try:
-        from faster_whisper import WhisperModel
-
-        logger.info("Loading Whisper model...")
-
-        # Use small model for faster processing
-        # Options: tiny, base, small, medium, large
-        model_size = "small"
-        model = WhisperModel(model_size, device="cpu", compute_type="int8")
-
-        logger.info(f"Transcribing audio with Whisper ({model_size})...")
-
-        # Transcribe
-        segments, info = model.transcribe(
-            file_path,
-            language='ko',  # Detect language automatically
-            beam_size=5
-        )
-
-        transcription = []
-        for segment in segments:
-            transcription.append(segment.text)
-
-        full_transcription = " ".join(transcription)
-
-        logger.info(f"Transcribed {len(full_transcription)} characters")
-        return full_transcription
-
-    except Exception as e:
-        logger.error(f"Error transcribing audio: {e}")
-        raise
-
-
 async def process_audio_task(task_data: Dict):
     """Process audio transcription task"""
     data = task_data.get('data', task_data)
@@ -116,22 +81,33 @@ async def process_audio_task(task_data: Dict):
 
         logger.info(f"Processing audio from path: {file_path} ({duration}s) for chat {chat_id}")
 
-        messenger.notify_progress(chat_id, "오디오를 인식하는 중...")
+        messenger.notify_progress(chat_id, "Gemini AI로 음성을 분석하는 중...")
 
-        transcription = await transcribe_audio(file_path)
+        with open(file_path, "rb") as audio_file:
+            audio_bytes = audio_file.read()
 
-        if not transcription.strip():
-            transcription = "[음성 인식 결과 없음]"
+        prompt = (
+            "다음 음성을 한국어로 정확하게 전사하고, 이어서 핵심 요약을 작성해주세요.\n"
+            "출력 형식:\n"
+            "[전사]\n전사 내용...\n\n[요약]\n요약 내용..."
+        )
 
-        messenger.notify_progress(chat_id, "Gemini AI로 분석하는 중...")
+        analysis = gemini.analyze_audio(
+            audio_bytes,
+            prompt=prompt,
+            mime_type=mime_type,
+        )
 
-        summary = gemini.analyze_audio_transcription(transcription)
+        if not analysis:
+            analysis = "[Gemini 응답 없음]"
 
         result = {
-            "transcription": transcription,
-            "summary": summary,
+            "gemini_analysis": analysis,
             "duration": duration,
-            "processed_at": datetime.now().isoformat()
+            "processed_at": datetime.now().isoformat(),
+            "transcription": analysis,
+            "summary": analysis,
+            "file_path": file_path,
         }
 
         messenger.send_result(chat_id, result, task_id)

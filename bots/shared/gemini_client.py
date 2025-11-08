@@ -52,13 +52,14 @@ class GeminiAnalyzer:
             logger.error(f"Image analysis error: {e}")
             return None
 
-    def analyze_audio(self, audio_data: bytes, prompt: str = "") -> Optional[str]:
+    def analyze_audio(self, audio_data: bytes, *, prompt: str = "", mime_type: Optional[str] = None) -> Optional[str]:
         """Analyze audio with Gemini multimodal"""
         if not self.enabled:
             return None
 
         try:
-            audio_part = {"mime_type": "audio/ogg", "data": audio_data}
+            effective_mime = mime_type or "audio/ogg"
+            audio_part = {"mime_type": effective_mime, "data": audio_data}
             full_prompt = prompt or "Transcribe and summarize this audio"
             response = self.model.generate_content([full_prompt, audio_part])
             return response.text.strip()

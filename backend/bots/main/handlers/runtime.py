@@ -57,14 +57,17 @@ except ImportError:
     logger.error("python-telegram-bot is not installed. pip install python-telegram-bot==21.6")
     sys.exit(1)
 
-# gemini (multimodal)
+# gemini (multimodal + chat 전용)
 gemini_model = None
+gemini_chat_model = None
 if GEMINI_API_KEY:
     try:
         import google.generativeai as genai
         genai.configure(api_key=GEMINI_API_KEY)
         gemini_model = genai.GenerativeModel('gemini-2.5-flash')
         logger.info("Using Gemini 2.5 Flash (multimodal)")
+        gemini_chat_model = genai.GenerativeModel('gemini-2.5-flash-lite')
+        logger.info("Using Gemini 2.5 Flash-Lite (chat)")
     except Exception as e:
         logger.error(f"Gemini setup failed: {e}")
 else:

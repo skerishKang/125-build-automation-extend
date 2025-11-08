@@ -48,7 +48,7 @@ async def handle_mode(runtime: Any, update: "Update", context: "ContextTypes.DEF
 async def handle_text(runtime: Any, update: "Update", context: "ContextTypes.DEFAULT_TYPE") -> None:
     """Main chat handler that routes user text to Gemini while using memory."""
     GEMINI_API_KEY = runtime.GEMINI_API_KEY
-    gemini_model = runtime.gemini_model
+    gemini_chat_model = getattr(runtime, "gemini_chat_model", None)
     reply_text = runtime.reply_text
     fetch_memory = runtime.fetch_memory
     save_memory = runtime.save_memory
@@ -61,7 +61,7 @@ async def handle_text(runtime: Any, update: "Update", context: "ContextTypes.DEF
     if not text or text.startswith("/"):
         return
 
-    if not GEMINI_API_KEY or not gemini_model:
+    if not GEMINI_API_KEY or not gemini_chat_model:
         await reply_text(update, "Gemini 설정이 없어 대화가 비활성화되어 있어요.")
         return
 
@@ -104,11 +104,11 @@ async def handle_text(runtime: Any, update: "Update", context: "ContextTypes.DEF
     indicator = ActionIndicator(context, update.effective_chat.id, ChatAction.TYPING)
     await indicator.__aenter__()
 
-    progress_messages.append(await update.message.reply_text("🧠 Gemini 2.5 Flash 분석 중… [50%]"))
+    progress_messages.append(await update.message.reply_text("🧠 Gemini 2.5 Flash-Lite 분석 중… [50%]"))
 
     try:
         def _call_gemini():
-            response = gemini_model.generate_content(prompt)
+            response = gemini_chat_model.generate_content(prompt)
             return response.text.strip()
 
         raw = await asyncio.to_thread(_call_gemini)

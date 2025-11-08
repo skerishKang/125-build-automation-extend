@@ -8,13 +8,48 @@ import logging
 import os
 import tempfile
 import textwrap
-from typing import Any, Dict, Tuple, Callable, Awaitable
+from typing import Any, Dict, Tuple, Callable, Awaitable, Iterable
 
 from telegram import Bot
 
 from backend.services.google_drive import upload_file  # type: ignore
+from backend.services import notion
+from bots.shared.user_preferences import preference_store
 
 logger = logging.getLogger("action_handlers")
+
+async def _send_progress(bot: Bot, chat_id: str, message: str) -> None:
+    try:
+        await bot.send_message(chat_id=int(chat_id), text=message)
+    except Exception as exc:  # pragma: no cover - notification best-effort
+        logger.debug("Progress notify failed: %s", exc)
+
+
+def _is_notion_enabled(chat_id: str) -> bool:
+    prefs = preference_store.get_preferences(chat_id)
+    integrations = prefs.get("integrations", {}) if isinstance(prefs, dict) else {}
+    return integrations.get("notion", False)
+
+
+def _maybe_log_to_notion(chat_id: str, title: str, lines: Iterable[str]) -> None:
+    if not _is_notion_enabled(chat_id):
+        return
+
+    blocks = []
+    for line in lines:
+        normalized = (line or "").strip()
+        if normalized:
+            blocks.append(notion.build_paragraph_block(normalized[:2000]))
+
+    if not blocks:
+        return
+
+    success = notion.create_page(title, blocks)
+    if success:
+        logger.info("Notion page created for chat %s: %s", chat_id, title)
+    else:
+        logger.warning("Failed to create Notion page for chat %s", chat_id)
+
 
 # Load .env file manually
 def load_env():
@@ -83,8 +118,10 @@ async def _handle_document_original(bot: Bot, chat_id: str, record: Dict[str, An
 
     tmp_path = None
     try:
+        await _send_progress(bot, chat_id, "📥 문서 원본 다운로드 중...")
         suffix = os.path.splitext(file_name)[1] or ".bin"
         tmp_path = await _download_telegram_file(bot, file_id, suffix)
+        await _send_progress(bot, chat_id, "⬆️ Google Drive 업로드 중...")
         success, message = await _upload_local_file(tmp_path, file_name)
         return message if success else message
     finally:
@@ -92,7 +129,7 @@ async def _handle_document_original(bot: Bot, chat_id: str, record: Dict[str, An
             os.remove(tmp_path)
 
 
-async def _handle_document_summary(_: Bot, __: str, record: Dict[str, Any]) -> str:
+async def _handle_document_summary(bot: Bot, chat_id: str, record: Dict[str, Any]) -> str:
     result = record.get("result", {})
     file_name = _safe_name(result.get("file_name", ""), "document")
     summary = result.get("summary", "")
@@ -115,10 +152,25 @@ async def _handle_document_summary(_: Bot, __: str, record: Dict[str, Any]) -> s
 
     fd, tmp_path = tempfile.mkstemp(prefix="doc_summary_", suffix=".txt")
     try:
+        await _send_progress(bot, chat_id, "📝 요약 텍스트 준비 중...")
         with os.fdopen(fd, "w", encoding="utf-8") as tmp_file:
             tmp_file.write("\n".join(content_lines))
 
+        await _send_progress(bot, chat_id, "⬆️ 요약 결과를 Drive에 업로드 중...")
         success, message = await _upload_local_file(tmp_path, drive_file_name)
+        if success:
+            title = f"문서 요약 - {file_name}"
+            notion_lines = [
+                f"파일명: {file_name}",
+                f"분석 시각: {processed_at or '알 수 없음'}",
+                "",
+                "[요약]",
+                summary.strip() or "(요약 없음)",
+                "",
+                "[본문 발췌]",
+                extracted.strip() or "(본문 없음)",
+            ]
+            _maybe_log_to_notion(chat_id, title, notion_lines)
         return message if success else message
     finally:
         if os.path.exists(tmp_path):
@@ -135,8 +187,10 @@ async def _handle_image_original(bot: Bot, chat_id: str, record: Dict[str, Any])
 
     tmp_path = None
     try:
+        await _send_progress(bot, chat_id, "📥 이미지 원본 다운로드 중...")
         suffix = os.path.splitext(file_name)[1] or ".jpg"
         tmp_path = await _download_telegram_file(bot, file_id, suffix)
+        await _send_progress(bot, chat_id, "⬆️ 이미지 원본을 Drive에 업로드 중...")
         success, message = await _upload_local_file(tmp_path, file_name)
         return message if success else message
     finally:
@@ -144,7 +198,7 @@ async def _handle_image_original(bot: Bot, chat_id: str, record: Dict[str, Any])
             os.remove(tmp_path)
 
 
-async def _handle_image_summary(_: Bot, __: str, record: Dict[str, Any]) -> str:
+async def _handle_image_summary(bot: Bot, chat_id: str, record: Dict[str, Any]) -> str:
     result = record.get("result", {})
     processed_at = result.get("processed_at", "")
     description = result.get("description", "")
@@ -164,10 +218,24 @@ async def _handle_image_summary(_: Bot, __: str, record: Dict[str, Any]) -> str:
 
     fd, tmp_path = tempfile.mkstemp(prefix="image_summary_", suffix=".txt")
     try:
+        await _send_progress(bot, chat_id, "📝 이미지 분석 텍스트 준비 중...")
         with os.fdopen(fd, "w", encoding="utf-8") as tmp_file:
             tmp_file.write("\n".join(content_lines))
 
+        await _send_progress(bot, chat_id, "⬆️ 분석 결과를 Drive에 업로드 중...")
         success, message = await _upload_local_file(tmp_path, drive_file_name)
+        if success:
+            title = f"이미지 분석 - {processed_at or '기록'}"
+            notion_lines = [
+                f"분석 시각: {processed_at or '알 수 없음'}",
+                "",
+                "[설명]",
+                description.strip() or "(설명이 없습니다)",
+                "",
+                "[분석]",
+                analysis.strip() or "(분석 내용이 없습니다)",
+            ]
+            _maybe_log_to_notion(chat_id, title, notion_lines)
         return message if success else message
     finally:
         if os.path.exists(tmp_path):
@@ -184,8 +252,10 @@ async def _handle_audio_original(bot: Bot, chat_id: str, record: Dict[str, Any])
 
     tmp_path = None
     try:
+        await _send_progress(bot, chat_id, "📥 오디오 원본 다운로드 중...")
         suffix = os.path.splitext(file_name)[1] or ".ogg"
         tmp_path = await _download_telegram_file(bot, file_id, suffix)
+        await _send_progress(bot, chat_id, "⬆️ 오디오 원본을 Drive에 업로드 중...")
         success, message = await _upload_local_file(tmp_path, file_name)
         return message if success else message
     finally:
@@ -193,7 +263,7 @@ async def _handle_audio_original(bot: Bot, chat_id: str, record: Dict[str, Any])
             os.remove(tmp_path)
 
 
-async def _handle_audio_summary(_: Bot, __: str, record: Dict[str, Any]) -> str:
+async def _handle_audio_summary(bot: Bot, chat_id: str, record: Dict[str, Any]) -> str:
     result = record.get("result", {})
     processed_at = result.get("processed_at", "")
     transcription = result.get("transcription", "")
@@ -213,10 +283,24 @@ async def _handle_audio_summary(_: Bot, __: str, record: Dict[str, Any]) -> str:
 
     fd, tmp_path = tempfile.mkstemp(prefix="audio_summary_", suffix=".txt")
     try:
+        await _send_progress(bot, chat_id, "📝 오디오 전사/요약 정리 중...")
         with os.fdopen(fd, "w", encoding="utf-8") as tmp_file:
             tmp_file.write("\n".join(content_lines))
 
+        await _send_progress(bot, chat_id, "⬆️ 전사/요약 파일을 Drive에 업로드 중...")
         success, message = await _upload_local_file(tmp_path, drive_file_name)
+        if success:
+            title = f"오디오 분석 - {processed_at or '기록'}"
+            notion_lines = [
+                f"분석 시각: {processed_at or '알 수 없음'}",
+                "",
+                "[전사]",
+                transcription.strip() or "(전사 내용이 없습니다)",
+                "",
+                "[요약]",
+                summary.strip() or "(요약이 없습니다)",
+            ]
+            _maybe_log_to_notion(chat_id, title, notion_lines)
         return message if success else message
     finally:
         if os.path.exists(tmp_path):

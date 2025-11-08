@@ -19,6 +19,10 @@ DEFAULT_PREFERENCES = {
         "image": "none",
         "audio": "none",
     },
+    "integrations": {
+        "slack": True,
+        "notion": False,
+    },
 }
 
 
@@ -62,6 +66,12 @@ class PreferenceStore:
             default_actions["document"] = legacy_action
         merged["default_actions"] = default_actions
 
+        integrations = DEFAULT_PREFERENCES["integrations"].copy()
+        stored_integrations = stored.get("integrations") if isinstance(stored, dict) else {}
+        if isinstance(stored_integrations, dict):
+            integrations.update(stored_integrations)
+        merged["integrations"] = integrations
+
         return merged
 
     def set_preferences(self, chat_id: str, prefs: Dict[str, Any]) -> Dict[str, Any]:
@@ -75,6 +85,11 @@ class PreferenceStore:
                 if isinstance(value, dict):
                     defaults.update(value)
                 merged["default_actions"] = defaults
+            elif key == "integrations":
+                integrations = merged.get("integrations", {}).copy()
+                if isinstance(value, dict):
+                    integrations.update(value)
+                merged["integrations"] = integrations
             else:
                 merged[key] = value
 
@@ -89,6 +104,11 @@ class PreferenceStore:
                 }
                 if diff:
                     payload[key] = diff
+            elif key == "integrations":
+                if isinstance(value, dict) and isinstance(default_value, dict):
+                    diff = {k: v for k, v in value.items() if default_value.get(k) != v}
+                    if diff:
+                        payload[key] = diff
             elif value != default_value:
                 payload[key] = value
         key = self._make_key(chat_id)

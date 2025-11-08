@@ -15,11 +15,14 @@ logger = logging.getLogger("calendar_service")
 SCOPES = ['https://www.googleapis.com/auth/calendar']
 _calendar_service = None
 
-SERVICE_ACCOUNT_FILE = os.path.join(
+DEFAULT_SERVICE_ACCOUNT_FILE = os.path.join(
     os.path.dirname(os.path.dirname(__file__)),
     '..',
     'service_account.json',
 )
+
+SERVICE_ACCOUNT_FILE = os.getenv('CALENDAR_SERVICE_ACCOUNT_FILE') or DEFAULT_SERVICE_ACCOUNT_FILE
+CALENDAR_ID = os.getenv('GOOGLE_CALENDAR_ID') or 'padiemipu@gmail.com'
 
 
 
@@ -58,10 +61,12 @@ def get_events_in_range(start_time: datetime, end_time: datetime, max_results: i
         end_time = _ensure_tz(end_time)
 
         events_result = service.events().list(
-            calendarId='padiemipu@gmail.com',
+            calendarId=CALENDAR_ID,
             maxResults=max_results,
             singleEvents=True,
             orderBy='startTime',
+            timeMin=start_time.isoformat(),
+            timeMax=end_time.isoformat(),
         ).execute()
 
         events = events_result.get('items', [])
@@ -103,10 +108,12 @@ def get_upcoming_events(minutes_ahead: int = 30) -> List[Dict[str, Any]]:
         service = get_calendar_service()
 
         events_result = service.events().list(
-            calendarId='padiemipu@gmail.com',
+            calendarId=CALENDAR_ID,
             maxResults=50,
             singleEvents=True,
             orderBy='startTime',
+            timeMin=now.isoformat(),
+            timeMax=end_time.isoformat(),
         ).execute()
 
         events = events_result.get('items', [])
@@ -126,7 +133,7 @@ def search_events(query: str, max_results: int = 20) -> List[Dict[str, Any]]:
         future_time = now + timedelta(days=365)
 
         events_result = service.events().list(
-            calendarId='padiemipu@gmail.com',
+            calendarId=CALENDAR_ID,
             timeMin=now.isoformat(),
             timeMax=future_time.isoformat(),
             q=query,
@@ -218,10 +225,10 @@ def create_event(summary: str, start_dt: datetime, end_dt: datetime, description
     if location:
         event_body['location'] = location
 
-    logger.info("Attempting to create event with calendarId: %s and body: %s", 'padiemipu@gmail.com', event_body)
+    logger.info("Attempting to create event with calendarId: %s and body: %s", CALENDAR_ID, event_body)
 
     created_event = service.events().insert(
-        calendarId='padiemipu@gmail.com',
+        calendarId=CALENDAR_ID,
         body=event_body,
     ).execute()
 
