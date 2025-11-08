@@ -58,6 +58,8 @@ from bots.main_bot.handlers import (  # type: ignore
     handle_drive_help,
     handle_drive_list,
     handle_drive_sync,
+    handle_reminder,
+    handle_reminder_command,
 )
 from bots.main_bot.utils.text_utils import (  # type: ignore
     simplify_markdown,

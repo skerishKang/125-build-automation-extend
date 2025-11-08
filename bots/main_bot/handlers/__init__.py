@@ -11,3 +11,7 @@ from .drive import (  # noqa: F401
     handle_drive_list,
     handle_drive_sync,
 )
+from .reminder import (  # noqa: F401
+    handle_reminder,
+    handle_reminder_command,
+)
