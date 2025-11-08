@@ -29,9 +29,9 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         f"Hello {user_name}! 125 Build Automation Bot is running normally.\n\n"
         "Supported features:\n"
-        "• Document upload and analysis\n"
-        "• AI-based summarization and Q&A\n"
-        "• Various file formats support (.pdf, .docx, .txt, etc.)\n\n"
+        "- Document upload and analysis\n"
+        "- AI-based summarization and Q&A\n"
+        "- Various file formats support (.pdf, .docx, .txt, etc.)\n\n"
         "Upload a document to test!"
     )
 

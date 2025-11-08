@@ -59,22 +59,22 @@ def format_event_message(event: dict) -> str:
 
     lines = [
         "🔔 곧 시작할 일정이 있어요!",
-        f"• 제목: {summary}",
-        f"• 시간: {time_str}",
+        f"- 제목: {summary}",
+        f"- 시간: {time_str}",
     ]
 
     if location:
-        lines.append(f"• 장소: {location}")
+        lines.append(f"- 장소: {location}")
 
     if description:
         desc_preview = description.strip()
         if len(desc_preview) > 150:
             desc_preview = desc_preview[:150] + "..."
-        lines.append(f"• 메모: {desc_preview}")
+        lines.append(f"- 메모: {desc_preview}")
 
     html_link = event.get("htmlLink")
     if html_link:
-        lines.append(f"• 보기: {html_link}")
+        lines.append(f"- 보기: {html_link}")
 
     lines.append("\n⏰ 준비해주세요!")
     return "\n".join(lines)

@@ -514,13 +514,13 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 os.remove(old_doc['file_path'])
 
         await update.message.reply_text(
-            f"📎 **문서 저장 완료**\n\n"
-            f"**파일명:** {file_name}\n"
-            f"**형식:** {mime_type}\n\n"
-            f"분석을 원하시면 다음 명령을 사용하세요:\n"
-            f"• `/analyze` - 최근 문서 분석\n"
-            f"• `/summarize` - 최근 문서 요약\n"
-            f"• `/ask [질문]` - 문서에 대해 질문",
+            f"- **문서 저장 완료**\n\n"
+            f"- **파일명:** {file_name}\n"
+            f"- **형식:** {mime_type}\n\n"
+            f"- 분석을 원하시면 다음 명령을 사용하세요:\n"
+            f"- `/analyze` - 최근 문서 분석\n"
+            f"- `/summarize` - 최근 문서 요약\n"
+            f"- `/ask [질문]` - 문서에 대해 질문",
             parse_mode='Markdown'
         )
 
@@ -676,13 +676,13 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         help_msg = """🤖 **125 Build Automation 봇**
 
 사용 가능한 기능:
-• 문서 업로드 후 다음 명령어 사용:
+- 문서 업로드 후 다음 명령어 사용:
   - `/analyze` - 문서 전문 분석
   - `/summarize` - 문서 요약
   - `/list` - 저장된 문서 목록
   - `/ask [질문]` - RAG 기반 질문
 
-• 또는 일반 텍스트로 질문하기
+- 또는 일반 텍스트로 질문하기
 
 먼저 문서를 업로드해주세요!"""
         await update.message.reply_text(help_msg, parse_mode='Markdown')

@@ -48,15 +48,15 @@ async def process_new_files(bot: Bot) -> None:
 
         message = [
             "📂 Google Drive에 새 파일이 업로드되었어요!",
-            f"• 이름: {name}",
+            f"- 이름: {name}",
         ]
 
         if created:
-            message.append(f"• 생성: {created}")
+            message.append(f"- 생성: {created}")
         if modified and modified != created:
-            message.append(f"• 수정: {modified}")
+            message.append(f"- 수정: {modified}")
         if link:
-            message.append(f"• 링크: {link}")
+            message.append(f"- 링크: {link}")
 
         text = "\n".join(message)
 

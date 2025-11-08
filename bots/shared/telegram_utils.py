@@ -151,6 +151,20 @@ class TelegramClient:
             return None
 
 
+def build_bot(bot_token: str) -> Bot:
+    """Create a Bot instance with HTTPX proxy 호환 패치 적용."""
+
+    request = _build_compatible_request()
+    return Bot(token=bot_token, request=request)
+
+
+def build_application(bot_token: str) -> Application:
+    """Create an Application with HTTPX proxy 호환 Request."""
+
+    request = _build_compatible_request()
+    return Application.builder().token(bot_token).request(request).build()
+
+
 async def send_progress_message(
     bot: Bot,
     chat_id: str,

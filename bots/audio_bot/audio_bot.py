@@ -17,10 +17,9 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
 from dotenv import load_dotenv
 load_dotenv()
 
-from telegram import Bot
 from bots.shared.redis_utils import BotMessenger  # type: ignore
 from bots.shared.gemini_client import GeminiAnalyzer  # type: ignore
-from bots.shared.telegram_utils import TelegramClient  # type: ignore
+from bots.shared.telegram_utils import TelegramClient, build_bot  # type: ignore
 
 # Configure logging
 logging.basicConfig(
@@ -184,7 +183,7 @@ async def main():
 
     try:
         # Test Telegram connection
-        bot = Bot(token=AUDIO_BOT_TOKEN)
+        bot = build_bot(AUDIO_BOT_TOKEN)
         await bot.get_me()
         print("[OK] Telegram connection successful")
     except Exception as e:

@@ -153,8 +153,8 @@ def format_plain(text: str, max_len: int = 1200) -> str:
     # Remove header symbols (keep line breaks)
     text = re.sub(r"^#{1,6}\s*", "", text, flags=re.MULTILINE)
     # List symbols (keep line breaks)
-    text = re.sub(r"^\s*[-*•]\s*", "• ", text, flags=re.MULTILINE)
-    text = re.sub(r"^\s*\d+\.\s*", "• ", text, flags=re.MULTILINE)
+    text = re.sub(r"^\s*[-*•]\s*", "- ", text, flags=re.MULTILINE)
+    text = re.sub(r"^\s*\d+\.\s*", "- ", text, flags=re.MULTILINE)
     # Remove bold/italic
     text = text.replace("**", "").replace("*", "")
     # Remove backticks
@@ -610,7 +610,7 @@ def extract_text_from_file(file_path: str, file_name: str) -> str:
                     file_list = zip_ref.namelist()
                     text += f"총 {len(file_list)}개 파일\n\n"
                     for file_in_zip in file_list[:10]:  # Show first 10 files
-                        text += f"• {file_in_zip}\n"
+                        text += f"- {file_in_zip}\n"
                         # If it's a text file, try to extract and read
                         if any(file_in_zip.lower().endswith(ext) for ext in ['.txt', '.md', '.py', '.js', '.html', '.css', '.json', '.xml']):
                             try:

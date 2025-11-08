@@ -7,11 +7,9 @@ import os
 from datetime import datetime
 from typing import List, Optional
 
-from telegram import Bot
-
 from backend.services.gmail import GmailService
-from backend.services import slack
 from bots.shared.gemini_client import GeminiAnalyzer
+from bots.shared.telegram_utils import build_bot
 from bots.shared.user_preferences import preference_store
 
 logger = logging.getLogger("gmail_monitor")
@@ -50,20 +48,20 @@ def summarize_email(email: dict, gemini: GeminiAnalyzer) -> str:
 
 def format_email_message(email: dict, summary: str) -> str:
     lines: List[str] = [
-        "📧 새 메일이 도착했습니다!",
-        f"• 보낸사람: {email.get('sender', '알 수 없음')}",
-        f"• 제목: {email.get('subject', '제목 없음')}",
+        "새 메일이 도착했습니다!",
+        f"- 보낸사람: {email.get('sender', '알 수 없음')}",
+        f"- 제목: {email.get('subject', '제목 없음')}",
     ]
 
     date_str = email.get('date')
     if date_str:
-        lines.append(f"• 시간: {date_str}")
+        lines.append(f"- 시간: {date_str}")
 
     link = email.get('link')
     if link:
-        lines.append(f"• 링크: {link}")
+        lines.append(f"- 링크: {link}")
 
-    lines.append("\n🤖 AI 요약:\n" + summary)
+    lines.append("\n AI 요약:\n" + summary)
     return "\n".join(lines)
 
 
@@ -120,7 +118,7 @@ async def monitor_loop() -> None:
         logger.error("Gmail 인증 실패")
         return
 
-    bot = Bot(token=TELEGRAM_BOT_TOKEN)
+    bot = build_bot(TELEGRAM_BOT_TOKEN)
     gemini = GeminiAnalyzer()
 
     logger.info(

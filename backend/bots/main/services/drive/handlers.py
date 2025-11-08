@@ -20,10 +20,10 @@ async def handle_drive(runtime: Any, update: "Update", context: "ContextTypes.DE
     help_text = (
         "📁 **Google Drive 동기화 가이드**\n\n"
         "**사용 가능한 명령어:**\n"
-        "• `/drive` - 이 도움말 보기\n"
-        "• `/drivelist` - 드라이브 파일 목록 보기\n"
-        "• `/driveget <file_id>` - 드라이브에서 파일 가져오기\n"
-        "• `/drivesync` - 새로 올라온 파일 확인\n\n"
+        "- `/drive` - 이 도움말 보기\n"
+        "- `/drivelist` - 드라이브 파일 목록 보기\n"
+        "- `/driveget <file_id>` - 드라이브에서 파일 가져오기\n"
+        "- `/drivesync` - 새로 올라온 파일 확인\n\n"
         "**자동 동기화:**\n"
         "✓ 텔레그램 파일 자동 드라이브 저장 + Gemini 분석\n\n"
         "**지원 파일 형식:**\n"
@@ -169,23 +169,23 @@ async def handle_drive_sync(runtime: Any, update: "Update", context: "ContextTyp
 
         if new_files:
             has_changes = True
-            result_lines.append(f"🆕 **새로 올라온 파일** ({len(new_files)}개):\n")
+            result_lines.append(f"- **새로 올라온 파일** ({len(new_files)}개):\n")
             for index, file in enumerate(new_files, 1):
-                file_type = "📁 폴더" if file.get("mimeType") == "application/vnd.google-apps.folder" else "📄 파일"
+                file_type = "- 폴더" if file.get("mimeType") == "application/vnd.google-apps.folder" else "- 파일"
                 result_lines.append(f"{index}. {file_type}: **{file['name']}**")
                 result_lines.append(f"   ID: `{file['id']}`")
             result_lines.append("")
 
         if deleted_files:
             has_changes = True
-            result_lines.append(f"🗑️ **삭제된 파일** ({len(deleted_files)}개):\n")
+            result_lines.append(f"- **삭제된 파일** ({len(deleted_files)}개):\n")
             for index, file in enumerate(deleted_files, 1):
                 result_lines.append(f"{index}. **{file['name']}**")
                 result_lines.append(f"   ID: `{file['id']}`")
             result_lines.append("")
 
         if not has_changes:
-            await reply_text(update, "📭 새 파일이 없습니다.")
+            await reply_text(update, "- 새 파일이 없습니다.")
         else:
             await reply_text(update, "\n".join(result_lines).strip())
 
@@ -233,7 +233,7 @@ async def monitor_drive_changes(runtime: Any) -> None:
                     message_parts.append(f"🆕 **새로 올라온 파일** ({len(new_files)}개):")
                     for file in new_files[:5]:
                         file_type = "📁 폴더" if file.get("mimeType") == "application/vnd.google-apps.folder" else "📄"
-                        message_parts.append(f"• {file_type}: {file['name']}")
+                        message_parts.append(f"- {file_type}: {file['name']}")
                     if len(new_files) > 5:
                         message_parts.append(f"... 외 {len(new_files) - 5}개")
                     message_parts.append("")
@@ -241,7 +241,7 @@ async def monitor_drive_changes(runtime: Any) -> None:
                 if deleted_files:
                     message_parts.append(f"🗑️ **삭제된 파일** ({len(deleted_files)}개):")
                     for file in deleted_files[:5]:
-                        message_parts.append(f"• {file['name']}")
+                        message_parts.append(f"- {file['name']}")
                     if len(deleted_files) > 5:
                         message_parts.append(f"... 외 {len(deleted_files) - 5}개")
                     message_parts.append("")

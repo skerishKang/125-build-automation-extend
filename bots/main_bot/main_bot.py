@@ -48,6 +48,7 @@ from bots.shared.telegram_utils import (  # type: ignore
     is_text_file,
     is_document_file,
     is_audio_file,
+    build_application,
 )
 from backend.services.gmail import GmailService  # type: ignore
 from backend.services import calendar_service  # type: ignore
@@ -622,6 +623,13 @@ def detect_natural_command(text: str) -> Optional[Dict[str, Any]]:
 
         return {"command": "bots"}
 
+    for integration, keywords in INTEGRATION_KEYWORDS.items():
+        if any(keyword in lowered for keyword in keywords):
+            if any(word in lowered for word in DISABLE_KEYWORDS):
+                return {"command": "integration_toggle", "integration": integration, "state": False}
+            if any(word in lowered for word in ENABLE_KEYWORDS):
+                return {"command": "integration_toggle", "integration": integration, "state": True}
+
     if any(keyword in lowered for keyword in SETTINGS_UNDO_KEYWORDS):
         return {"command": "settings_undo"}
 
@@ -1083,6 +1091,8 @@ async def apply_preferences_to_task(bot: Bot, chat_id: str, task_id: str, task_t
     if not record:
         return
 
+    last_state = last_preference_states.get(chat_id)
+
     task_type = task_type or record.get("task_type", "document")
 
     mode = prefs.get("mode", DEFAULT_PREFERENCES["mode"])
@@ -1099,7 +1109,11 @@ async def apply_preferences_to_task(bot: Bot, chat_id: str, task_id: str, task_t
             logger.error("Failed to announce auto action (settings): %s", exc)
         await execute_followup_action(action, bot, chat_id, record)
         followup_tasks.pop(task_id, None)
+        last_preference_states[chat_id] = {"mode": mode, "action": action}
     elif mode == "skip":
+        if last_state and last_state.get("mode") == "skip":
+            followup_tasks.pop(task_id, None)
+            return
         try:
             await bot.send_message(
                 chat_id=int(chat_id),
@@ -1108,8 +1122,10 @@ async def apply_preferences_to_task(bot: Bot, chat_id: str, task_id: str, task_t
         except Exception as exc:
             logger.error("Failed to send skip confirmation: %s", exc)
         followup_tasks.pop(task_id, None)
+        last_preference_states[chat_id] = {"mode": mode}
     else:
         await prompt_followup(bot, chat_id, task_id, task_type)
+        last_preference_states[chat_id] = {"mode": mode, "action": None}
 
 
 async def apply_preferences_to_pending_tasks(bot: Bot, chat_id: str, task_type: Optional[str], prefs: Dict[str, Any]) -> None:
@@ -1445,6 +1461,10 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         if command == "settings_update":
             await handle_settings_update(update, context, detected["preferences"])
+            return
+        if command == "integration_toggle":
+            prefs_intent = {"integrations": {detected["integration"]: detected["state"]}}
+            await handle_settings_update(update, context, prefs_intent)
             return
         if command == "settings_undo":
             await handle_settings_undo(update, context)
@@ -2669,8 +2689,8 @@ def main():
         print("Please set MAIN_BOT_TOKEN in .env file")
         return
 
-    # Create application
-    application = Application.builder().token(MAIN_BOT_TOKEN).build()
+    # Create application with patched HTTPX request
+    application = build_application(MAIN_BOT_TOKEN)
 
     # Add handlers
     application.add_handler(CommandHandler("start", handle_start))
