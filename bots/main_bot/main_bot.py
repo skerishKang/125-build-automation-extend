@@ -50,8 +50,19 @@ from bots.shared.telegram_utils import (  # type: ignore
     is_audio_file,
     build_application,
 )
-from backend.services.gmail import GmailService  # type: ignore
-from backend.services import calendar_service  # type: ignore
+from bots.main_bot.handlers import (  # type: ignore
+    handle_gmail,
+    handle_calendar,
+    handle_calendar_add,
+    handle_calendar_natural_language,
+)
+from bots.main_bot.utils.text_utils import (  # type: ignore
+    simplify_markdown,
+    split_into_chunks,
+    format_duration,
+    format_email_entry,
+)
+from bots.main_bot.utils.datetime_utils import parse_relative_date_time  # type: ignore
 from backend.services import notion  # type: ignore
 from backend.services.drive_sync import (  # type: ignore
     get_folder_files,
@@ -103,28 +114,6 @@ def estimate_processing_time(task_type: str, file_info: Dict) -> int:
 
     return 60
 
-
-def format_duration(seconds: int) -> str:
-    """Format seconds into human-readable duration."""
-    if seconds < 60:
-        return f"{seconds}초"
-    minutes = seconds // 60
-    remaining_seconds = seconds % 60
-    if remaining_seconds > 0:
-        return f"{minutes}분 {remaining_seconds}초"
-    return f"{minutes}분"
-
-
-def split_into_chunks(text: str, limit: int = 3500) -> List[str]:
-    """Split long strings into Telegram-friendly chunks."""
-    if not text:
-        return []
-    return [text[i:i + limit] for i in range(0, len(text), limit)]
-
-
-markdown_heading_pattern = re.compile(r"^#{1,6}\s*", flags=re.MULTILINE)
-bold_pattern = re.compile(r"(\*\*|__)(.*?)\1")
-inline_code_pattern = re.compile(r"`(.+?)`")
 
 GMAIL_KEYWORDS = ["gmail", "메일", "이메일", "mail", "편지", "email"]
 CALENDAR_KEYWORDS = ["일정", "schedule", "calendar", "캘린더", "약속", "meeting", "회의", "모임", "event"]
@@ -281,11 +270,6 @@ BOTS_REQUEST_VERBS = [
 def _contains_intent_phrase(lowered: str, compact: str, phrases: List[str]) -> bool:
     for phrase in phrases:
         phrase_lower = phrase.lower()
-        if phrase_lower in lowered or phrase_lower in compact:
-            return True
-    return False
-
-
 def simplify_markdown(text: str) -> str:
     """Convert basic Markdown into cleaner plain text for Telegram."""
     if not text:
@@ -378,7 +362,7 @@ def parse_relative_date_time(text: str, reference: Optional[datetime] = None) ->
     if any(token in lowered for token in ["오전", "아침", "새벽", "am"]):
         meridiem_offset = 0
 
-    time_match = re.search(r'(\d{1,2})\s*시\s*(\d{1,2})?\s*분?', text)
+    time_match = re.search(r'(\d{1,2})\s*시\s*(\d{0,2})?\s*분?', text)
     if time_match:
         time_hour = int(time_match.group(1))
         minutes = time_match.group(2)
