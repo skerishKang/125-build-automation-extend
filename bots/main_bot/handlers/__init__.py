@@ -6,3 +6,8 @@ from .calendar import (  # noqa: F401
     handle_calendar_add,
     handle_calendar_natural_language,
 )
+from .drive import (  # noqa: F401
+    handle_drive_help,
+    handle_drive_list,
+    handle_drive_sync,
+)
